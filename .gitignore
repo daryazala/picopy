@@ -1,0 +1,124 @@
+*.ipynb
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Poetry
+poetry.lock
+
+# pytest
+.pytest_cache/
+.cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# pytype
+.pytype/
+
+# coverage
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Pylint, flake8, etc.
+*.lint
+*.log
+.tox/
+*.tox/
+.coverage.*
+*.pylint.d
+
+# Virtual Environments
+.env/
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Spyder
+.spyderproject
+.spyproject
+
+# VSCode
+.vscode/
+
+# PyCharm
+.idea/
+
+# Test / debug / scratch files
+*.bak
+*.tmp
+*.swp
+*.~ 
+*.log
+
+# Secrets (don't do this—keep these out of git!)
+.env
+.env.*
+
+# Custom: data or outputs
+data/
+output/
+*.csv
+*.tsv
+*.json
+*.xlsx
+*.h5
+*.nc
+*.pkl
+*.db
+
+# If using Docker
+*.container
+*.pid
+*.tar
+*.sock
+
+# Optional: ignore system files
+.DS_Store
+Thumbs.db
+
