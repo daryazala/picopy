@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 import calendar
 import subprocess
+import os
 
 
 def find_alt_stabilization(df, window_size=5, threshold=1.0):
@@ -34,18 +35,15 @@ def find_alt_stabilization(df, window_size=5, threshold=1.0):
     #print('HERE', type(df), df['altitude'].values)
     temp  = df['altitude'].values
     altitudes = temp
-    print(len(altitudes))
     if len(altitudes) < window_size:
         return None  # Not enough data to check stabilization
 
     for i in range(len(altitudes) - window_size + 1):
         try:
             window = altitudes[i:i + window_size]
-            print(i,window)
         except:
             print('error', i, window_size)
         if np.std(window) <= threshold:
-            print('RETURNING', i)
             return i  # Stabilization starts here
 
     return None  # Never stabilized
@@ -227,7 +225,7 @@ def control_naming(df, window_size=5, threshold=1.0, prefix='CONTROL'):
 
 def create_control_file(
     metadata,
-    output_path='/home/expai/project/model/CONTROL',
+    output_path = '/home/expai/project/model/CONTROL',
     number_locations = 1,
     run_duration=24*7,
     met_directory='/home/expai/project/gdas/',
@@ -245,7 +243,7 @@ def create_control_file(
 
     Returns:
     - The output filename (e.g., tdump.N1234alpha.2025-06-23_15:58.txt)
-    """
+    """      
 
     dt = metadata['date']
     year = dt.strftime('%Y')
@@ -279,24 +277,139 @@ def create_control_file(
     ]
 
     # Write to CONTROL file
-    print(output_path)
     with open(output_path, 'w') as f:
         for line in lines:
             f.write(line + '\n')
 
     return output_filename
 
-    
+def read_balloon_files(directory, pattern="PBA*"):
+    """
+    Reads all balloon data files from a directory using readObs.read_custom_csv.
 
+    Parameters:
+    - directory: str or Path, path to the directory containing balloon files
+    - pattern: glob pattern to match balloon files (default: 'PBA*')
+
+    Returns:
+    - List of tuples: (file_path, DataFrame) for each successfully read file
+    """
+    directory = Path(directory)
+    files = sorted(directory.glob(pattern))
+    
+    results = []
+    for file in files:
+        try:
+            df = readObs.read_custom_csv(file)
+            results.append((file, df))
+        except Exception as e:
+            print(f"⚠️ Could not read {file}: {e}")
+    
+    return results
+
+def run_hysplit(callsign_suffix, hysplit_exec_path="/home/expai/hysplit/exec/hyts_std"):
+    """
+    Runs the HYSPLIT trajectory model using the provided callsign suffix.
+    
+    Parameters:
+    - callsign_suffix: str, the suffix used in the CONTROL file (typically the balloon callsign).
+    - hysplit_exec_path: path to the hyts_std executable.
+
+    Returns:
+    - True if the run was successful (exit code 0), False otherwise.
+    """
+    # Sanitize input just in case
+    safe_suffix = str(callsign_suffix).strip()
+
+    # Build command
+    cmd = [hysplit_exec_path, safe_suffix]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        print(f"✅ HYSPLIT run completed for {safe_suffix}")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"❌ HYSPLIT failed for {safe_suffix}")
+        print(f"Return code: {e.returncode}")
+        print(f"Stdout: {e.stdout}")
+        print(f"Stderr: {e.stderr}")
+        return False
+            
+def process_single_balloon(file_path):
+    """
+    Processes a single balloon data file:
+    - Reads the data
+    - Finds stabilization point
+    - Extracts metadata
+    - Creates CONTROL file
+    - Runs HYSPLIT using the balloon callsign suffix
+
+    Parameters:
+    - file_path: Path to the balloon file
+
+    Returns:
+    - A dict with:
+        - 'file': original file path
+        - 'success': True/False
+        - 'message': description of what happened
+        - 'tdump_file': expected output file (if known)
+    """
+    result = {
+        'file': str(file_path),
+        'success': False,
+        'message': '',
+        'tdump_file': None
+    }
+
+    try:
+        df = readObs.read_custom_csv(file_path)
+    except Exception as e:
+        result['message'] = f"Failed to read file: {e}"
+        return result
+
+    index = find_alt_stabilization(df)
+    if index is None:
+        result['message'] = "No stabilization point found."
+        return result
+
+    metadata = get_start(df, index)
+    if metadata is None:
+        result['message'] = "Failed to extract metadata from stabilization point."
+        return result
+
+    try:
+        tdump_file = create_control_file(metadata)
+        result['tdump_file'] = tdump_file
+    except Exception as e:
+        result['message'] = f"Failed to create CONTROL file: {e}"
+        return result
+
+    callsign = metadata['callsign']
+    try:
+        hysplit_success = run_hysplit(callsign)
+        if not hysplit_success:
+            result['message'] = f"HYSPLIT failed for {callsign}"
+            return result
+    except Exception as e:
+        result['message'] = f"Error while running HYSPLIT: {e}"
+        return result
+
+    result['success'] = True
+    result['message'] = f"Successfully processed {file_path}"
+    return result
+
+"""
 fnames = glob.glob("/home/expai/project/data/PBA*")
 observed_traj = readObs.read_custom_csv(fnames[0])
 stabilization_pt = find_alt_stabilization(observed_traj)
 start = get_start(observed_traj,stabilization_pt)
 filename = generate_filename(start)
-file = create_control_file(start, output_path='/home/expai/project/model/CONTROL.1')
+file = create_control_file(start)
 runtime = compute_runtime(observed_traj)
 controlname = control_naming(observed_traj)
-
+"""
+reading = read_balloon_files('/home/expai/project/data/')
+single = process_single_balloon('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
 
     
     
