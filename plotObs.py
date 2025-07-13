@@ -50,3 +50,4 @@ def plot_lat_lon_mod(df, ax, clr):
         return ax
     else:
         print("The DataFrame must contain 'latitude' and 'longitude' columns.")
+

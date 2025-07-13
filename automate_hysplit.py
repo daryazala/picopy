@@ -18,6 +18,9 @@ from pathlib import Path
 import calendar
 import subprocess
 import os
+import requests
+from bs4 import BeautifulSoup
+from tqdm import tqdm
 
 
 def find_alt_stabilization(df, window_size=5, threshold=1.0):
@@ -33,9 +36,12 @@ def find_alt_stabilization(df, window_size=5, threshold=1.0):
     - Index of the first point where stabilization begins, or None if not found.
     """
     #print('HERE', type(df), df['altitude'].values)
+    #print("finding altitudes!")
+    print(type(df))
     temp  = df['altitude'].values
     altitudes = temp
     if len(altitudes) < window_size:
+        #print("length altitude less than window size", len(altitudes), window_size)
         return None  # Not enough data to check stabilization
 
     for i in range(len(altitudes) - window_size + 1):
@@ -45,6 +51,7 @@ def find_alt_stabilization(df, window_size=5, threshold=1.0):
             print('error', i, window_size)
         if np.std(window) <= threshold:
             return i  # Stabilization starts here
+        #print(i, np.std(window), window[-1])
 
     return None  # Never stabilized
 
@@ -225,7 +232,7 @@ def control_naming(df, window_size=5, threshold=1.0, prefix='CONTROL'):
 
 def create_control_file(
     metadata,
-    output_path = '/home/expai/project/model/CONTROL',
+    output_path = '/home/expai/project/model/',
     number_locations = 1,
     run_duration=24*7,
     met_directory='/home/expai/project/gdas/',
@@ -260,6 +267,10 @@ def create_control_file(
     met_filename2 = infer_met_filename_2(dt)
     output_filename = generate_filename(metadata)
 
+    
+    #print('FILENAME', output_filename)
+    output_path = os.path.join(output_path,  f'CONTROL.{metadata['callsign']}')
+    #print('PATH FOR CONTROL FILE', output_path)
     lines = [
         f"{year} {month} {day} {hour}",
         f"{number_locations}",
@@ -307,7 +318,7 @@ def read_balloon_files(directory, pattern="PBA*"):
     
     return results
 
-def run_hysplit(callsign_suffix, hysplit_exec_path="/home/expai/hysplit/exec/hyts_std"):
+def run_hysplit(callsign_suffix, working_dir = '/home/expai/project/model/', hysplit_exec_path="/home/expai/hysplit/exec/hyts_std"):
     """
     Runs the HYSPLIT trajectory model using the provided callsign suffix.
     
@@ -323,16 +334,21 @@ def run_hysplit(callsign_suffix, hysplit_exec_path="/home/expai/hysplit/exec/hyt
 
     # Build command
     cmd = [hysplit_exec_path, safe_suffix]
-
+    current_dir = os.getcwd()
+    os.chdir(working_dir)
+    #print('DIRECTORY', os.getcwd())
+    #print('COMMAND', cmd)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         print(f"✅ HYSPLIT run completed for {safe_suffix}")
+        os.chdir(current_dir)
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ HYSPLIT failed for {safe_suffix}")
         print(f"Return code: {e.returncode}")
         print(f"Stdout: {e.stdout}")
         print(f"Stderr: {e.stderr}")
+        os.chdir(current_dir)
         return False
             
 def process_single_balloon(file_path):
@@ -367,7 +383,21 @@ def process_single_balloon(file_path):
         result['message'] = f"Failed to read file: {e}"
         return result
 
-    index = find_alt_stabilization(df)
+    try:
+        payload_type = get_payload(file_path)
+    except Exception as e:
+        result['message'] = f"Failed to determine payload type: {e}"
+        return result
+
+    # Set parameters based on payload
+    if payload_type == 'APRS':
+        window_size = 25
+        threshold = 90.0
+    else:  # Default for WSPR or any other
+        window_size = 5
+        threshold = 1.0
+
+    index = find_alt_stabilization(df, window_size=window_size, threshold=threshold)
     if index is None:
         result['message'] = "No stabilization point found."
         return result
@@ -399,6 +429,176 @@ def process_single_balloon(file_path):
     return result
 
 """
+def process_all_balloons(directory='/home/expai/project/data/', pattern="PBA*"):
+    #
+    Processes all balloon data files in a directory.
+
+    Parameters:
+    - directory: str or Path to the directory with balloon files
+    - pattern: glob pattern for file matching (default: 'PBA*')
+
+    Returns:
+    - List of dicts with result info for each file
+    #
+    print(f"🔍 Searching for balloon files in: {directory}")
+    balloon_data = read_balloon_files(directory, pattern=pattern)
+    print(f"📂 Found {len(balloon_data)} file(s).")
+
+    results = []
+    for file_path, _ in balloon_data:
+        print(f"🚀 Processing {file_path.name}...")
+        result = process_single_balloon(file_path)
+        results.append(result)
+        if result['success']:
+            print(f"✅ Success: {result['tdump_file']}")
+        else:
+            print(f"❌ Failed: {result['message']}")
+
+    # Summary
+    success_count = sum(r['success'] for r in results)
+    failure_count = len(results) - success_count
+    print("\n=== 🎯 Processing Summary ===")
+    print(f"✅ Successful: {success_count}")
+    print(f"❌ Failed: {failure_count}")
+
+    return results
+"""
+
+def process_all_balloons(target_year=None, directory='/home/expai/project/data/', pattern="PBA*"):
+    """
+    Processes all balloon data files in a directory, optionally filtering by start year.
+
+    Parameters:
+    - directory: str or Path to the directory with balloon files
+    - pattern: glob pattern for file matching (default: 'PBA*')
+    - target_year: str, last two digits of year to filter (e.g., '25' for 2025)
+
+    Returns:
+    - List of dicts with result info for each file
+    """
+    from pathlib import Path
+    import pandas as pd
+
+    print(f"🔍 Searching for balloon files in: {directory}")
+    balloon_data = read_balloon_files(directory, pattern=pattern)
+    print(f"📂 Found {len(balloon_data)} file(s).")
+
+    results = []
+    for file_path, df in balloon_data:
+        start_year = get_start_year(df, file_path)
+
+        if target_year is not None:
+            if start_year != target_year:
+                print(f"⏩ Skipping {file_path.name}: Year '{start_year}' ≠ Target '{target_year}'")
+                continue
+
+        print(f"🚀 Processing {file_path.name}...")
+        result = process_single_balloon(file_path)
+        results.append(result)
+        if result['success']:
+            print(f"✅ Success: {result['tdump_file']}")
+        else:
+            print(f"❌ Failed: {result['message']}")
+
+    # Summary
+    success_count = sum(r['success'] for r in results)
+    failure_count = len(results) - success_count
+    print("\n=== 🎯 Processing Summary ===")
+    print(f"✅ Successful: {success_count}")
+    print(f"❌ Failed: {failure_count}")
+
+    return results
+
+def get_start_year(df, file_path):
+    """
+    Returns the last two digits of the year at the stabilization point in the balloon data.
+
+    Parameters:
+    - df: pandas DataFrame with 'time' and 'altitude' columns
+
+    Returns:
+    - String representing the last two digits of the year (e.g., '25' for 2025), or None if not found
+    """
+    
+    try:
+        payload_type = get_payload(file_path)
+    except Exception as e:
+        print(f"⚠️ Failed to determine payload type: {e}")
+        return None
+
+    if payload_type == 'APRS':
+        window_size = 25
+        threshold = 90.0
+    else:  # WSPR or fallback
+        window_size = 5
+        threshold = 1.0
+
+    index = find_alt_stabilization(df, window_size=window_size, threshold=threshold)    
+    metadata = get_start(df, index)
+    
+    if metadata is None or 'date' not in metadata:
+        print("⚠️ Could not extract stabilization year.")
+        return None
+
+    return metadata['date'].strftime('%y')  # e.g., '25'
+
+def download_processed_balloon_data(dest_dir="/home/expai/project/data/"):
+    """
+    Downloads all the data in the PBA
+
+    """
+    base_url = "https://data.picoballoonarchive.org/data/processed/"
+    os.makedirs(dest_dir, exist_ok=True)
+
+    print(f"Fetching file list from {base_url}...")
+    response = requests.get(base_url)
+    if response.status_code != 200:
+        raise RuntimeError(f"Failed to fetch file list: status {response.status_code}")
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    links = [a["href"] for a in soup.find_all("a", href=True)
+             if not a["href"].startswith("?") and not a["href"].startswith("/") and not a["href"].endswith("/")]
+
+    print(f"Found {len(links)} files. Starting download...")
+
+    for file_name in tqdm(links, desc="Downloading files"):
+        file_url = base_url + file_name
+        local_path = os.path.join(dest_dir, file_name)
+
+        if os.path.exists(local_path):
+            continue  # Skip existing files
+
+        with requests.get(file_url, stream=True) as r:
+            if r.status_code != 200:
+                print(f"Failed to download {file_name} (status {r.status_code})")
+                continue
+
+            with open(local_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+    print("Download complete.")
+    
+def get_payload(file_path):
+    """
+    Extracts payload type from the balloon data file name.
+    
+    Expected format: PBA_{balloon_callsign}_{payload_type}_{year}_{month}_{day}.txt
+    
+    Returns:
+    - 'APRS' or 'WSPR' (or other if format changes)
+    """
+    filename = os.path.basename(file_path)
+    parts = filename.split('_')
+    
+    if len(parts) < 4:
+        raise ValueError(f"Unexpected filename format: {filename}")
+    
+    payload_type = parts[2].upper()
+    return payload_type
+
+
+'''
 fnames = glob.glob("/home/expai/project/data/PBA*")
 observed_traj = readObs.read_custom_csv(fnames[0])
 stabilization_pt = find_alt_stabilization(observed_traj)
@@ -407,15 +607,48 @@ filename = generate_filename(start)
 file = create_control_file(start)
 runtime = compute_runtime(observed_traj)
 controlname = control_naming(observed_traj)
+'''
 """
-reading = read_balloon_files('/home/expai/project/data/')
-single = process_single_balloon('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
+#reading = read_balloon_files('/home/expai/project/data/')
+balloon_files = glob.glob('/home/expai/project/data/PBA*txt')
+for bfile in balloon_files:
+    process_single_balloon(bfile)
+#single = process_single_balloon('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
+"""
+'''
+#final = process_all_balloons()
+fnames = glob.glob("/home/expai/project/data/PBA*")
+observed_traj = readObs.read_custom_csv(fnames[1])
+stabilization_pt = find_alt_stabilization(observed_traj)
+start = get_start(observed_traj,stabilization_pt)
+filename = generate_filename(start)
+file = create_control_file(start)
+runtime = compute_runtime(observed_traj)
+controlname = control_naming(observed_traj)
+    
+year = get_start_year(observed_traj)
+'''
+# download = download_processed_balloon_data()
+# balloons25 = process_all_balloons(target_year = "25")
 
-    
-    
-    
-    
-    
-    
-    
+"""
+AE5OJ2 = readObs.read_custom_csv('/home/expai/project/data/PBA_AE5OJ-2_APRS_2024-02-01.txt')
+index = find_alt_stabilization(AE5OJ2)
+year = get_start_year(AE5OJ2,'/home/expai/project/data/PBA_AE5OJ-2_APRS_2024-02-01.txt')
+payload = get_payload('/home/expai/project/data/PBA_AE5OJ-2_APRS_2024-02-01.txt')
+
+KM4YHI = readObs.read_custom_csv('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
+index2 = find_alt_stabilization(KM4YHI)
+year2 = get_start_year(KM4YHI, '/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
+payload2 = get_payload('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
+"""
+
+
+
+
+
+
+
+
+
     
