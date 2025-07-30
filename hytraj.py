@@ -173,7 +173,7 @@ def get_startlocs(tdump):
     stlocs = stlocs[["time", "latitude", "longitude", "altitude"]]
     # Puts time into datetime object
     stlocs["time"] = stlocs.apply(lambda row: time_str_fixer(row["time"]), axis=1)
-    stlocs["time"] = pd.to_datetime(stlocs["time"], format="%y %m %d %H")
+    stlocs["time"] = pd.to_datetime(stlocs["time"], format="%Y %m %d %H")
     return stlocs
 
 

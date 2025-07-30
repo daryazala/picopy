@@ -21,6 +21,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
+import shutil
 
 
 def find_alt_stabilization(df, window_size=5, threshold=1.0):
@@ -55,22 +56,32 @@ def find_alt_stabilization(df, window_size=5, threshold=1.0):
 
     return None  # Never stabilized
 
-def get_start(df, index):
+def get_start(df, index, delay_rows=0):
     """
     Finds stabilization and returns metadata from that point:
     datetime, latitude, longitude, and callsign.
+    
+    Parameters: 
+        - df: pandas DataFrame containing balloon daa
+        - index: index of stabiliation point
+        - delay_rows: number of rows to skip after the stabilization point
     """
     
     if index is None:
         return None
     
-    row = df.iloc[index]
+    new_index = index + delay_rows
+    if new_index >= len(df):
+        print(f"⚠️ Delay of {delay_rows} rows exceeds data length.")
+        return None
+    
+    row = df.iloc[new_index]
     return {
         'date': pd.to_datetime(row['time']),
         'latitude': float(row['latitude']),
         'longitude': float(row['longitude']),
         'altitude': float(row['altitude']),
-        'callsign': str(row['balloon_callsign'])
+        'callsign': str(row['balloon_callsign']), 
     }
 
 def compute_runtime(df, window_size=5, threshold=1.0, units='minutes'):
@@ -112,7 +123,7 @@ def compute_runtime(df, window_size=5, threshold=1.0, units='minutes'):
     else:
         raise ValueError("units must be 'minutes' or 'hours'")
 
-def generate_filename(metadata, prefix='tdump', extension='txt'):
+def generate_filename(metadata, prefix='tdump', extension='txt', delay_rows=0):
     """
     Generates a trajectory filename using metadata from get_start().
     
@@ -135,9 +146,10 @@ def generate_filename(metadata, prefix='tdump', extension='txt'):
     
     # Format datetime
     date_str = starttime.strftime('%Y-%m-%d_%H:%M')
+    delay_tag = f"d{delay_rows}" if delay_rows > 0 else "d0"
     
     # Construct filename
-    filename = f"{prefix}.{safe_callsign}.{date_str}.{extension}"
+    filename = f"{prefix}.{safe_callsign}.{date_str}.{delay_tag}.{extension}"
     return filename
 
 def infer_met_filename(dt):
@@ -207,7 +219,7 @@ def infer_met_filename_2(dt):
     return f"gdas1.{month_abbr}{year_suffix}.w{next_week}"
 
 
-def control_naming(df, window_size=5, threshold=1.0, prefix='CONTROL'):
+def control_naming(df, window_size=5, threshold=1.0, prefix='CONTROL', delay_rows = 0):
     """
     Uses stabilization metadata to generate a CONTROL file name based on callsign.
 
@@ -219,8 +231,8 @@ def control_naming(df, window_size=5, threshold=1.0, prefix='CONTROL'):
     Returns:
     - CONTROL filename string, e.g., 'CONTROL.N1234alpha'
     """
-    index = find_alt_stabilization(df)
-    metadata = get_start(df,index)
+    index = find_alt_stabilization(df, window_size=window_size, threshold = threshold)
+    metadata = get_start(df,index,delay_rows=delay_rows)
 
     if metadata is None:
         raise ValueError("No stabilization point found in the data.")
@@ -228,7 +240,7 @@ def control_naming(df, window_size=5, threshold=1.0, prefix='CONTROL'):
     raw_callsign = str(metadata['callsign'])
     safe_callsign = re.sub(r'[^A-Za-z0-9_-]', '', raw_callsign)
 
-    return f"{prefix}.{safe_callsign}"
+    return f"{prefix}.{safe_callsign}.d{delay_rows}"
 
 def create_control_file(
     metadata,
@@ -236,7 +248,8 @@ def create_control_file(
     number_locations = 1,
     run_duration=24*7,
     met_directory='/home/expai/project/gdas/',
-    tdump_directory='/home/expai/project/tdump/'
+    tdump_directory='/home/expai/project/tdump/',
+    delay_rows=0
 ):
     """
     Creates a HYSPLIT CONTROL file using inferred met filename and output filename.
@@ -265,11 +278,11 @@ def create_control_file(
     # Infer filenames
     met_filename = infer_met_filename(dt)
     met_filename2 = infer_met_filename_2(dt)
-    output_filename = generate_filename(metadata)
+    output_filename = generate_filename(metadata, delay_rows = delay_rows)
 
     
     #print('FILENAME', output_filename)
-    output_path = os.path.join(output_path,  f'CONTROL.{metadata['callsign']}')
+    output_path = os.path.join(output_path,  f'CONTROL.{metadata['callsign']}.d{delay_rows}')
     #print('PATH FOR CONTROL FILE', output_path)
     lines = [
         f"{year} {month} {day} {hour}",
@@ -318,7 +331,7 @@ def read_balloon_files(directory, pattern="PBA*"):
     
     return results
 
-def run_hysplit(callsign_suffix, working_dir = '/home/expai/project/model/', hysplit_exec_path="/home/expai/hysplit/exec/hyts_std"):
+def run_hysplit(callsign_suffix, delay_rows = 0, working_dir = '/home/expai/project/model/', hysplit_exec_path="/home/expai/hysplit/exec/hyts_std"):
     """
     Runs the HYSPLIT trajectory model using the provided callsign suffix.
     
@@ -330,7 +343,7 @@ def run_hysplit(callsign_suffix, working_dir = '/home/expai/project/model/', hys
     - True if the run was successful (exit code 0), False otherwise.
     """
     # Sanitize input just in case
-    safe_suffix = str(callsign_suffix).strip()
+    safe_suffix = f"{str(callsign_suffix).strip()}.d{delay_rows}"
 
     # Build command
     cmd = [hysplit_exec_path, safe_suffix]
@@ -351,7 +364,7 @@ def run_hysplit(callsign_suffix, working_dir = '/home/expai/project/model/', hys
         os.chdir(current_dir)
         return False
             
-def process_single_balloon(file_path):
+def process_single_balloon(file_path, delay_rows = 0):
     """
     Processes a single balloon data file:
     - Reads the data
@@ -402,13 +415,26 @@ def process_single_balloon(file_path):
         result['message'] = "No stabilization point found."
         return result
 
-    metadata = get_start(df, index)
+    metadata = get_start(df, index, delay_rows = delay_rows)
     if metadata is None:
         result['message'] = "Failed to extract metadata from stabilization point."
         return result
+    
+    lon = metadata.get('longitude', None)
+    if lon is not None and 0 >= lon >= -1:
+        # Move the file
+        bad_dir = Path("/home/expai/project/bad_longitude/")
+        bad_dir.mkdir(parents=True, exist_ok=True)
+        new_path = bad_dir / Path(file_path).name
+        try:
+            shutil.move(str(file_path), new_path)
+            result['message'] = f"File moved due to bad longitude: {lon}"
+        except Exception as e:
+            result['message'] = f"Failed to move file with bad longitude: {e}"
+        return result
 
     try:
-        tdump_file = create_control_file(metadata)
+        tdump_file = create_control_file(metadata, delay_rows=delay_rows)
         result['tdump_file'] = tdump_file
     except Exception as e:
         result['message'] = f"Failed to create CONTROL file: {e}"
@@ -416,7 +442,7 @@ def process_single_balloon(file_path):
 
     callsign = metadata['callsign']
     try:
-        hysplit_success = run_hysplit(callsign)
+        hysplit_success = run_hysplit(callsign,delay_rows=delay_rows)
         if not hysplit_success:
             result['message'] = f"HYSPLIT failed for {callsign}"
             return result
@@ -464,7 +490,7 @@ def process_all_balloons(directory='/home/expai/project/data/', pattern="PBA*"):
     return results
 """
 
-def process_all_balloons(target_year=None, directory='/home/expai/project/data/', pattern="PBA*"):
+def process_all_balloons(target_year=None, directory='/home/expai/project/data/', pattern="PBA*", delay_rows=0):
     """
     Processes all balloon data files in a directory, optionally filtering by start year.
 
@@ -476,9 +502,6 @@ def process_all_balloons(target_year=None, directory='/home/expai/project/data/'
     Returns:
     - List of dicts with result info for each file
     """
-    from pathlib import Path
-    import pandas as pd
-
     print(f"🔍 Searching for balloon files in: {directory}")
     balloon_data = read_balloon_files(directory, pattern=pattern)
     print(f"📂 Found {len(balloon_data)} file(s).")
@@ -493,7 +516,7 @@ def process_all_balloons(target_year=None, directory='/home/expai/project/data/'
                 continue
 
         print(f"🚀 Processing {file_path.name}...")
-        result = process_single_balloon(file_path)
+        result = process_single_balloon(file_path, delay_rows=delay_rows)
         results.append(result)
         if result['success']:
             print(f"✅ Success: {result['tdump_file']}")
@@ -538,6 +561,13 @@ def get_start_year(df, file_path):
     
     if metadata is None or 'date' not in metadata:
         print("⚠️ Could not extract stabilization year.")
+        failed_dir = Path("/home/expai/project/failed/")
+        failed_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.move(str(file_path), failed_dir / file_path.name)
+            print(f"📦 Moved {file_path.name} to {failed_dir}")
+        except Exception as move_error:
+            print(f"❗ Failed to move {file_path.name}: {move_error}")
         return None
 
     return metadata['date'].strftime('%y')  # e.g., '25'
@@ -629,7 +659,12 @@ controlname = control_naming(observed_traj)
 year = get_start_year(observed_traj)
 '''
 # download = download_processed_balloon_data()
-# balloons25 = process_all_balloons(target_year = "25")
+#balloons25 = process_all_balloons(target_year = "25")
+#balloons21 = process_all_balloons(target_year = "21")
+#balloons22 = process_all_balloons(target_year = "22")
+#balloons23 = process_all_balloons(target_year = "23")
+#balloons23 = process_all_balloons(target_year = "24")
+
 
 """
 AE5OJ2 = readObs.read_custom_csv('/home/expai/project/data/PBA_AE5OJ-2_APRS_2024-02-01.txt')
@@ -642,8 +677,20 @@ index2 = find_alt_stabilization(KM4YHI)
 year2 = get_start_year(KM4YHI, '/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
 payload2 = get_payload('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
 """
-
-
+"""
+obs = readObs.read_custom_csv('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
+stabilization_pt = find_alt_stabilization(obs)
+start = get_start(obs, stabilization_pt, 100)
+filename = generate_filename(start, delay_rows = 100)
+control = control_naming(obs, delay_rows=100)
+control_file = create_control_file(start, delay_rows = 100)
+KM4YHI = process_single_balloon('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt', delay_rows = 100)
+"""
+balloons25_d200 = process_all_balloons(target_year = "25", delay_rows = 200)
+balloons21_d200 = process_all_balloons(target_year = "21", delay_rows = 200)
+balloons22_d200 = process_all_balloons(target_year = "22", delay_rows = 200)
+balloons23_d200 = process_all_balloons(target_year = "23", delay_rows = 200)
+balloons24_d200 = process_all_balloons(target_year = "24", delay_rows = 200)
 
 
 
