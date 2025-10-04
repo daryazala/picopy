@@ -3,7 +3,14 @@
 """
 Created on Mon Jun 23 16:19:45 2025
 
-@author: expai
+@author: 
+
+added
+setup_naming
+create_setup_file
+
+setup a loop to call
+
 """
 
 import plotObs
@@ -217,6 +224,60 @@ def infer_met_filename_2(dt):
     year_suffix = str(next_year)[-2:]
 
     return f"gdas1.{month_abbr}{year_suffix}.w{next_week}"
+
+def setup_naming(df, window_size=5, threshold=1.0, prefix='SETUP', delay_rows=0):
+    """
+    Generates a SETUP file name using stabilization metadata and callsign.
+
+    Parameters:
+    - df: pandas DataFrame with altitude, datetime, lat, lon, callsign
+    - window_size, threshold: passed to stabilization metadata function
+    - prefix: file name prefix (default: 'SETUP')
+    - delay_rows: number of rows after stabilization point
+
+    Returns:
+    - SETUP filename string, e.g., 'SETUP.N1234alpha.d0'
+    """
+    index = find_alt_stabilization(df, window_size=window_size, threshold=threshold)
+    metadata = get_start(df, index, delay_rows=delay_rows)
+
+    if metadata is None:
+        raise ValueError("No stabilization point found in the data.")
+
+    raw_callsign = str(metadata['callsign'])
+    safe_callsign = re.sub(r'[^A-Za-z0-9_-]', '', raw_callsign)
+
+    return f"{prefix}.{safe_callsign}.d{delay_rows}"
+
+def create_setup_file(df, window_size=5, threshold=1.0, delay_rows=0, output_dir='/home/expai/project/model/'):
+    """
+    Creates a SETUP file using the stabilization metadata.
+
+    Parameters:
+    - df: pandas DataFrame containing balloon data
+    - window_size, threshold: passed to stabilization functions
+    - delay_rows: number of rows after stabilization point
+    - output_dir: directory to save the SETUP file
+
+    Returns:
+    - Path to the created SETUP file
+    """
+    filename = setup_naming(df, window_size=window_size, threshold=threshold, delay_rows=delay_rows)
+    filepath = Path(output_dir) / filename
+
+    content = """&SETUP
+TM_UWND = 1,
+TM_VWND = 1,
+TM_MIXD = 1,
+TM_PRES = 1,
+TM_RAIN = 1,
+/ \n"""
+
+    with open(filepath, 'w') as f:
+        f.write(content)
+
+    print(f"📝 SETUP file created at: {filepath}")
+    return str(filepath)
 
 
 def control_naming(df, window_size=5, threshold=1.0, prefix='CONTROL', delay_rows = 0):
@@ -439,6 +500,12 @@ def process_single_balloon(file_path, delay_rows = 0):
     except Exception as e:
         result['message'] = f"Failed to create CONTROL file: {e}"
         return result
+    
+    try:
+       setup = create_setup_file(df, window_size=window_size, threshold=threshold, delay_rows=delay_rows)
+    except Exception as e:
+       result['message'] = f"Failed to create SETUP file: {e}"
+       return result
 
     callsign = metadata['callsign']
     try:
@@ -658,7 +725,7 @@ controlname = control_naming(observed_traj)
     
 year = get_start_year(observed_traj)
 '''
-# download = download_processed_balloon_data()
+#download = download_processed_balloon_data()
 #balloons25 = process_all_balloons(target_year = "25")
 #balloons21 = process_all_balloons(target_year = "21")
 #balloons22 = process_all_balloons(target_year = "22")
@@ -672,7 +739,7 @@ index = find_alt_stabilization(AE5OJ2)
 year = get_start_year(AE5OJ2,'/home/expai/project/data/PBA_AE5OJ-2_APRS_2024-02-01.txt')
 payload = get_payload('/home/expai/project/data/PBA_AE5OJ-2_APRS_2024-02-01.txt')
 
-KM4YHI = readObs.read_custom_csv('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
+KM4YHI = readObs.read_custom_csv('c')
 index2 = find_alt_stabilization(KM4YHI)
 year2 = get_start_year(KM4YHI, '/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
 payload2 = get_payload('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
@@ -680,21 +747,51 @@ payload2 = get_payload('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt'
 """
 obs = readObs.read_custom_csv('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
 stabilization_pt = find_alt_stabilization(obs)
-start = get_start(obs, stabilization_pt, 100)
+start = get_start(obs, stabilization_pt, 100)s
 filename = generate_filename(start, delay_rows = 100)
 control = control_naming(obs, delay_rows=100)
 control_file = create_control_file(start, delay_rows = 100)
 KM4YHI = process_single_balloon('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt', delay_rows = 100)
 """
-balloons25_d200 = process_all_balloons(target_year = "25", delay_rows = 200)
-balloons21_d200 = process_all_balloons(target_year = "21", delay_rows = 200)
-balloons22_d200 = process_all_balloons(target_year = "22", delay_rows = 200)
-balloons23_d200 = process_all_balloons(target_year = "23", delay_rows = 200)
-balloons24_d200 = process_all_balloons(target_year = "24", delay_rows = 200)
+"""
+balloons25_d100 = process_all_balloons(target_year = "25", delay_rows = 120)
+balloons21_d100 = process_all_balloons(target_year = "21", delay_rows = 120)
+balloons22_d100 = process_all_balloons(target_year = "22", delay_rows = 120)
+balloons23_d100 = process_all_balloons(target_year = "23", delay_rows = 120)
+balloons24_d100 = process_all_balloons(target_year = "24", delay_rows = 120)
 
+balloons25_d200 = process_all_balloons(target_year = "25", delay_rows = 140)
+balloons21_d200 = process_all_balloons(target_year = "21", delay_rows = 140)
+balloons22_d200 = process_all_balloons(target_year = "22", delay_rows = 140)
+balloons23_d200 = process_all_balloons(target_year = "23", delay_rows = 140)
+balloons24_d200 = process_all_balloons(target_year = "24", delay_rows = 140)
+"""
+"""
+balloons25_d200 = process_all_balloons(target_year = "25", delay_rows = 160)
+balloons21_d200 = process_all_balloons(target_year = "21", delay_rows = 160)
+balloons22_d200 = process_all_balloons(target_year = "22", delay_rows = 160)
+balloons23_d200 = process_all_balloons(target_year = "23", delay_rows = 160)
+balloons24_d200 = process_all_balloons(target_year = "24", delay_rows = 160)
 
+balloons25_d200 = process_all_balloons(target_year = "25", delay_rows = 180)
+balloons21_d200 = process_all_balloons(target_year = "21", delay_rows = 180)
+balloons22_d200 = process_all_balloons(target_year = "22", delay_rows = 180)
+balloons23_d200 = process_all_balloons(target_year = "23", delay_rows = 180)
+balloons24_d200 = process_all_balloons(target_year = "24", delay_rows = 180)
+"""
+#KM4 = readObs.read_custom_csv('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
+#file = create_setup_file(KM4)
 
+#process_single_balloon('/home/expai/project/data/PBA_KM4YHI_WSPR_2021-03-08.txt')
 
+"""
+# Loop over years and delay rows
+for year in [25, 24, 23, 22, 21]:
+    for delay in range(0, 10001, 5):
+        var_name = f"balloons{year}_d{delay}"
+        globals()[var_name] = process_all_balloons(target_year=str(year), delay_rows=delay)
+"""
+process = process_all_balloons(target_year = "25", directory = "/home/expai/project/newdata/")
 
 
 

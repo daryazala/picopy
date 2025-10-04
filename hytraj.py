@@ -276,3 +276,6 @@ def get_traj(tdump):
     traj = traj[neworder]
     traj.columns = map(str.lower, traj.columns)
     return traj
+
+
+#tdf = open_dataset('/home/expai/project/model/tdump.test')

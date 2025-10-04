@@ -4,6 +4,11 @@
 Created on Tue Jun 17 10:32:47 2025
 
 @author: expai
+
+added the following
+plot_RHTD_vs_wind_mag
+add_wind_magnitude_column
+
 """
 
 import plotObs
@@ -73,9 +78,19 @@ def compute_AHTD(df_matched):
     km_per_deg_lat = 111  # ~ constant
     km_per_deg_lon = 111 * np.cos(np.deg2rad(df_matched['latitude_observed']))
 
-    # Compute delta in km
-    dx = (df_matched['longitude_modeled'] - df_matched['longitude_observed']) * km_per_deg_lon
+    # Compute delta 
+   
     dy = (df_matched['latitude_modeled'] - df_matched['latitude_observed']) * km_per_deg_lat
+    
+    # compute longitudinal distance
+    lon1 = df_matched['longitude_modeled']
+    lon2 = df_matched['longitude_observed']
+    # distance between the points:w
+    dx = np.abs(lon2-lon1)
+    # if distance is > 180 degrees, then go other way around the earth.
+    dx = np.where(dx>180, 360-dx, dx)
+    # convert to meters
+    dx = dx * km_per_deg_lon
 
     # Euclidean distance in km
     df_matched['ahtd_km'] = np.sqrt(dx**2 + dy**2)    
@@ -142,6 +157,9 @@ def haversine(lat1, lon1, lat2, lon2):
     
     dlat = lat2 - lat1
     dlon = lon2 - lon1
+    #dlon = np.abs(dlon)
+    #if dlon > 180:
+    #    dlon = 360 - dlon
     
     a = np.sin(dlat / 2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2)**2
     c = 2 * np.arcsin(np.sqrt(a))
@@ -206,6 +224,36 @@ def plot_RHTD_relative(df_matched, label=None, return_fig=False):
     ax.plot(df_matched['hour_since_launch'], df_matched['rhtd'], linestyle='-', marker='o', label=label)
     ax.set_title('Relative Horizontal Transport Deviation (RHTD)')
     ax.set_xlabel('Hour Since Launch')
+    ax.set_ylabel('RHTD')
+    ax.grid(True)
+    if label:
+        ax.legend()
+    plt.tight_layout()
+
+    if return_fig:
+        return fig
+    else:
+        plt.show()
+        
+def plot_RHTD_vs_wind_mag(df_matched, label=None, return_fig=False):
+    """
+    Plot RHTD vs wind magnitude (from modeled wind components).
+    
+    Parameters:
+        df_matched: DataFrame with 'rhtd' and 'wind_mag'
+        label: optional label for legend
+        return_fig: if True, return the figure object
+    
+    Returns:
+        fig: matplotlib Figure (if return_fig is True)
+    """
+    if 'wind_mag' not in df_matched.columns:
+        raise ValueError("DataFrame must contain 'wind_mag' column.")
+    
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(df_matched['wind_mag'], df_matched['rhtd'], linestyle='-', marker='o', label=label)
+    ax.set_title('RHTD vs Wind Magnitude')
+    ax.set_xlabel('Wind Magnitude (m/s)')
     ax.set_ylabel('RHTD')
     ax.grid(True)
     if label:
@@ -324,60 +372,77 @@ def batch_process_AHTD(observed_dir='/home/expai/project/data/',
         except Exception as e:
             print(f"[ERROR] Failed AHTD for {callsign} (delay {delay}): {e}")
             
-def batch_process_RHTD(observed_dir = '/home/expai/project/data/', model_dir = '/home/expai/project/tdump/', output_dir = '/home/expai/project/RHTD_plots/'):
+def batch_process_RHTD(observed_dir='/home/expai/project/data/',
+                       model_dir='/home/expai/project/tdump/',
+                       output_dir='/home/expai/project/RHTD_plots/'):
     """
-    Batch process matched observed and modeled files to compute and plot RHTD.
-
-    Parameters:
-        observed_dir: Directory with observed data files
-        model_dir: Directory with modeled tdump files
-        output_dir: Directory to save outputs (subdirectories for each callsign)
+    Batch process matched observed and modeled files to compute and plot RHTD,
+    including support for multiple delays per callsign.
     """
     os.makedirs(output_dir, exist_ok=True)
-
     matched_files = find_matching_files(observed_dir, model_dir)
 
-    for obs_path, mod_path in matched_files:
+    for obs_path, mod_path, delay in matched_files:
         callsign = extract_observed_callsign(obs_path)
-        print(f"[INFO] Processing RHTD for {callsign}")
+        delay_tag = f"d{delay}"
+        label = f"{callsign}_{delay_tag}"
+        print(f"[INFO] Processing RHTD for {label}")
 
         try:
-            # Load observed and modeled data
             obs_df = readObs.read_custom_csv(obs_path)
             mod_df = hytraj.open_dataset(mod_path)
-
-            # Compute cumulative path length for modeled data
+            mod_df = add_wind_magnitude_column(mod_df)
             mod_df_with_L = computeL(mod_df)
-
-            # Match trajectories by time
             matched_df = match_trajectories_by_time(mod_df_with_L, obs_df)
             matched_df = compute_AHTD(matched_df)
             matched_df = compute_RHTD(matched_df)
 
-            # Output directory for this callsign
-            subdir = os.path.join(output_dir, callsign)
+            subdir = os.path.join(output_dir, label)
             os.makedirs(subdir, exist_ok=True)
 
-            # Save results to CSV
-            csv_path = os.path.join(subdir, f"RHTD_{callsign}.csv")
+            # Save matched data
+            csv_path = os.path.join(subdir, f"RHTD_{label}.csv")
             matched_df.to_csv(csv_path, index=False)
 
             # Relative plot
-            fig_rel = plot_RHTD_relative(matched_df, label=callsign, return_fig=True)
-            plot_path_rel = os.path.join(subdir, f"RHTD_{callsign}_relative.png")
-            fig_rel.savefig(plot_path_rel)
+            fig_rel = plot_RHTD_relative(matched_df, label=label, return_fig=True)
+            fig_rel.savefig(os.path.join(subdir, f"RHTD_{label}_relative.png"))
             plt.close(fig_rel)
 
             # Absolute plot
             fig_abs = plot_RHTD(matched_df, return_fig=True)
-            plot_path_abs = os.path.join(subdir, f"RHTD_{callsign}_absolute.png")
-            fig_abs.savefig(plot_path_abs)
+            fig_abs.savefig(os.path.join(subdir, f"RHTD_{label}_absolute.png"))
             plt.close(fig_abs)
+            
+            fig_wind = plot_RHTD_vs_wind_mag(matched_df, label=label, return_fig = True)
+            fig_wind.savefig(os.path.join(subdir, f"RHTD_{label}_windmag.png"))
+            plt.close(fig_wind)
 
-            print(f"[SUCCESS] RHTD data and plot saved for {callsign}")
+            print(f"[SUCCESS] RHTD saved for {label}")
 
         except Exception as e:
-            print(f"[ERROR] Failed to process RHTD for {callsign}: {e}")
+            print(f"[ERROR] Failed RHTD for {label}: {e}")
+            
+def add_wind_magnitude_column(df):
+    """
+    Adds a WIND_MAG column to a DataFrame with UWIND and VWIND columns.
+
+    Parameters:
+        df (pd.DataFrame): Input DataFrame with UWIND and VWIND columns.
+
+    Returns:
+        pd.DataFrame: New DataFrame with added WIND_MAG column.
+
+    Raises:
+        ValueError: If UWIND or VWIND columns are missing.
+    """
+    if 'uwind' not in df.columns or 'vwind' not in df.columns:
+        raise ValueError("DataFrame must contain 'UWIND' and 'VWIND' columns.")
+
+    df = df.copy()
+    df['wind_mag'] = np.sqrt(df['uwind']**2 + df['vwind']**2)
+    return df
+
 
 """
 # reading the observed and modeled trajectory files
@@ -405,7 +470,11 @@ plt.show()
 #matched = find_matching_files()
 
 AHTD = batch_process_AHTD()
-#RHTD = batch_process_RHTD()
+RHTD = batch_process_RHTD()
+#result = haversine(0,179,0,-179)
+
+#df = hytraj.open_dataset('/home/expai/project/tdump/tdump.9A4GE-11.2024-05-01_09:32.d0.txt')
+#wind = add_wind_magnitude_column(df)
 
 
 
