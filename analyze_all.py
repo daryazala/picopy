@@ -312,7 +312,7 @@ import numpy as np
 
 
 
-df = combine_csvs_in_directory()
+#df = combine_csvs_in_directory()
 #df2 = combine_csvs_in_directory("/home/expai/project/RHTD_plots/")
 """
 plot_wind_comparison(df2, lat_range=(-90,-60))

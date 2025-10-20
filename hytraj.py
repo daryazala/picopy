@@ -49,7 +49,11 @@ def combine_dataset(flist, taglist=None, renumber=False, verbose=False):
 
     maxtrajnum = 0
     for iii, fname in enumerate(flist):
-        traj = open_dataset(fname)
+        try:
+            traj = open_dataset(fname)
+        except:
+            print(f'WARNING could not open {fname}')
+            continue
         if usepid:
             traj["pid"] = taglist[iii]
         if renumber:

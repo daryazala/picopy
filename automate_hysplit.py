@@ -11,8 +11,15 @@ create_setup_file
 
 setup a loop to call
 
-"""
+fix finding meteorological files to use week5 when appropriate
 
+change structure so loop through lag times for one balloon and then loop through balloons. 
+rather than the other way around. this reduces number of times a balloon file is read.
+
+added parallel processing so more than one run can be done at the same time.
+
+"""
+import datetime
 import plotObs
 import readObs
 import matplotlib.pyplot as plt
@@ -29,6 +36,9 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 import shutil
+
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 
 
 def find_alt_stabilization(df, window_size=5, threshold=1.0):
@@ -76,8 +86,9 @@ def get_start(df, index, delay_rows=0):
     
     if index is None:
         return None
-    
-    new_index = index + delay_rows
+    new_index = index 
+
+    #new_index = index + delay_rows
     if new_index >= len(df):
         print(f"⚠️ Delay of {delay_rows} rows exceeds data length.")
         return None
@@ -176,8 +187,10 @@ def infer_met_filename(dt):
         week = 'w2'
     elif 15 <= day <= 21:
         week = 'w3'
-    else:
+    elif 22 <= day <= 28:
         week = 'w4'
+    else:
+        week = 'w5'
 
     return f"gdas1.{month_abbr}{year_suffix}.{week}"
 
@@ -202,8 +215,10 @@ def infer_met_filename_2(dt):
         week = 2
     elif 15 <= day <= 21:
         week = 3
-    else:
+    elif 22 <= day <= 28:
         week = 4
+    else:
+        week = 5
 
     # Advance week
     if week < 4:
@@ -307,7 +322,7 @@ def create_control_file(
     metadata,
     output_path = '/home/expai/project/model/',
     number_locations = 1,
-    run_duration=24*7,
+    run_duration=24*14,
     met_directory='/home/expai/project/gdas/',
     tdump_directory='/home/expai/project/tdump/',
     delay_rows=0
@@ -326,21 +341,39 @@ def create_control_file(
     - The output filename (e.g., tdump.N1234alpha.2025-06-23_15:58.txt)
     """      
 
+    # begin date
     dt = metadata['date']
     year = dt.strftime('%Y')
     month = dt.strftime('%m')
     day = dt.strftime('%d')
     hour = dt.strftime('%H')
+    # end date
+    dt2 = dt + datetime.timedelta(hours=run_duration)
+
+
 
     lat = f"{metadata['latitude']:.4f}"
     lon = f"{metadata['longitude']:.4f}"
     alt = f"{metadata['altitude']:.1f}"
 
     # Infer filenames
-    met_filename = infer_met_filename(dt)
-    met_filename2 = infer_met_filename_2(dt)
+    met_filename_list = []
+    days = dt2-dt
+    days = int(days.seconds/3600/24 + days.days)
+    for d in range(0,days+1):
+        metfilename = infer_met_filename(dt + datetime.timedelta(days=d))
+        if metfilename not in met_filename_list:
+            met_filename_list.append(metfilename)
+    #met_filename_list = list(set(met_filename_list))
+    mlines = str(len(met_filename_list)) + '\n'
+    for mf in met_filename_list:
+        mlines += met_directory+ '\n' + mf + '\n'
+    # need to remove the last '\n'
+    mlines = mlines.strip()
+    #met_filename = infer_met_filename(dt)
+    #met_filename2 = infer_met_filename_2(dt)
     output_filename = generate_filename(metadata, delay_rows = delay_rows)
-
+    n_met_files = len(met_filename_list)
     
     #print('FILENAME', output_filename)
     output_path = os.path.join(output_path,  f'CONTROL.{metadata['callsign']}.d{delay_rows}')
@@ -352,11 +385,7 @@ def create_control_file(
         f"{run_duration}",
         "3", # vertical motion calculation method, constant density
         "28000",
-        "2",
-        f"{met_directory}",
-        f"{met_filename}",
-        f"{met_directory}",
-        f"{met_filename2}",
+        mlines, 
         f"{tdump_directory}",
         f"{output_filename}"
     ]
@@ -392,6 +421,42 @@ def read_balloon_files(directory, pattern="PBA*"):
     
     return results
 
+
+
+
+def run_hysplit_parallel(tasks, working_dir='/home/expai/project/model3/', hysplit_exec_path='/home/expai/hysplit/exec/hyts_std', max_workers=10):
+    """Run multiple HYSPLIT simulations in parallel.
+    tasks is list of tuples with suffix and delay.
+    """
+    results = []
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        future_to_task = {}
+        for ttt in tasks:
+            try:
+                suffix= ttt[0]
+                delay = ttt[1]
+            except:
+                continue
+            future =  executor.submit(run_hysplit, 
+                            suffix,
+                            delay,
+                            working_dir,
+                            hysplit_exec_path)
+            future_to_task[future] = (working_dir,suffix)
+
+        for future in as_completed(future_to_task):
+            wdir, suffix = future_to_task[future]
+            try:
+                result = future.result()
+                print(f"Task {suffix} finished: {result}")
+                results.append((suffix, result))
+            except Exception as e:
+                print(f"Task {suffix} failed with exception: {e}")
+                results.append((suffix, False))
+    return results
+
+
+
 def run_hysplit(callsign_suffix, delay_rows = 0, working_dir = '/home/expai/project/model/', hysplit_exec_path="/home/expai/hysplit/exec/hyts_std"):
     """
     Runs the HYSPLIT trajectory model using the provided callsign suffix.
@@ -425,7 +490,10 @@ def run_hysplit(callsign_suffix, delay_rows = 0, working_dir = '/home/expai/proj
         os.chdir(current_dir)
         return False
             
-def process_single_balloon(file_path, delay_rows = 0):
+def process_single_balloon(file_path):
+                           #delay_rows = 0, 
+                           #output_path='/home/expai/project/model3/',
+                           #tdir='/home/expai/project/tdump3/'):
     """
     Processes a single balloon data file:
     - Reads the data
@@ -450,18 +518,20 @@ def process_single_balloon(file_path, delay_rows = 0):
         'message': '',
         'tdump_file': None
     }
+    df = pd.DataFrame()
+    index = None
 
     try:
         df = readObs.read_custom_csv(file_path)
     except Exception as e:
         result['message'] = f"Failed to read file: {e}"
-        return result
+        return result, df, index
 
     try:
         payload_type = get_payload(file_path)
     except Exception as e:
         result['message'] = f"Failed to determine payload type: {e}"
-        return result
+        return result, df, index
 
     # Set parameters based on payload
     if payload_type == 'APRS':
@@ -471,93 +541,88 @@ def process_single_balloon(file_path, delay_rows = 0):
         window_size = 5
         threshold = 1.0
 
+    df = df.reset_index(drop=True)
     index = find_alt_stabilization(df, window_size=window_size, threshold=threshold)
     if index is None:
         result['message'] = "No stabilization point found."
-        return result
+        return result, df, index
 
-    metadata = get_start(df, index, delay_rows = delay_rows)
+    result['window_size'] = window_size
+    result['threshold'] = threshold
+    result['success'] = True
+    result['message'] = f'Successfully opened {file_path}'
+    #metadata = get_start(df, index, delay_rows = delay_rows)
+    #if metadata is None:
+    #    result['message'] = "Failed to extract metadata from stabilization point."
+    #    return result
+
+    return result, df, index
+
+def balloon2traj(df,index,inhash,delay_rows=0,
+                output_path='/home/expai/project/model3/',
+                tdir='/home/expai/project/tdump3/',
+                run=True):
+    metadata = get_start(df,index,delay_rows=delay_rows)
+    window_size = inhash['window_size']
+    threshold = inhash['threshold']
+    result = {}
+    result['success'] = False
     if metadata is None:
         result['message'] = "Failed to extract metadata from stabilization point."
         return result
-    
+
     lon = metadata.get('longitude', None)
     if lon is not None and 0 >= lon >= -1:
-        # Move the file
-        bad_dir = Path("/home/expai/project/bad_longitude/")
-        bad_dir.mkdir(parents=True, exist_ok=True)
-        new_path = bad_dir / Path(file_path).name
-        try:
-            shutil.move(str(file_path), new_path)
-            result['message'] = f"File moved due to bad longitude: {lon}"
-        except Exception as e:
-            result['message'] = f"Failed to move file with bad longitude: {e}"
+        print(f'skipping for now due to longitude value: {lon}')
+        result['message'] = 'skipped due to longitude value'  
         return result
+        # Move the file
+        #bad_dir = Path("/home/expai/project/bad_longitude/")
+        #bad_dir.mkdir(parents=True, exist_ok=True)
+        #new_path = bad_dir / Path(file_path).name
+        #try:
+        #    shutil.move(str(file_path), new_path)
+        #    result['message'] = f"File moved due to bad longitude: {lon}"
+        #except Exception as e:
+        #    result['message'] = f"Failed to move file with bad longitude: {e}"
+        #return result
 
     try:
-        tdump_file = create_control_file(metadata, delay_rows=delay_rows)
+        tdump_file = create_control_file(metadata, delay_rows=delay_rows,output_path=output_path,tdump_directory=tdir)
         result['tdump_file'] = tdump_file
     except Exception as e:
         result['message'] = f"Failed to create CONTROL file: {e}"
         return result
     
     try:
-       setup = create_setup_file(df, window_size=window_size, threshold=threshold, delay_rows=delay_rows)
+       setup = create_setup_file(df, window_size=window_size, threshold=threshold, delay_rows=delay_rows,output_dir=output_path)
     except Exception as e:
        result['message'] = f"Failed to create SETUP file: {e}"
        return result
 
     callsign = metadata['callsign']
-    try:
-        hysplit_success = run_hysplit(callsign,delay_rows=delay_rows)
-        if not hysplit_success:
-            result['message'] = f"HYSPLIT failed for {callsign}"
+    if os.path.isfile(os.path.join(tdir,tdump_file)):
+       result['message'] = f'tdump file already created not running {tdir}/{tdump_file}'
+       return result
+    if run:
+        try:
+            hysplit_success = run_hysplit(callsign,delay_rows=delay_rows,working_dir=output_path)
+            if not hysplit_success:
+                result['message'] = f"HYSPLIT failed for {callsign}"
+                return result
+        except Exception as e:
+            result['message'] = f"Error while running HYSPLIT: {e}"
             return result
-    except Exception as e:
-        result['message'] = f"Error while running HYSPLIT: {e}"
+
+        result['success'] = True
+        result['message'] = f"Successfully processed"
         return result
+    else: return (callsign, delay_rows)
 
-    result['success'] = True
-    result['message'] = f"Successfully processed {file_path}"
-    return result
+def find_delay_rows(df, skip=10):
+    pass
 
-"""
-def process_all_balloons(directory='/home/expai/project/data/', pattern="PBA*"):
-    #
-    Processes all balloon data files in a directory.
-
-    Parameters:
-    - directory: str or Path to the directory with balloon files
-    - pattern: glob pattern for file matching (default: 'PBA*')
-
-    Returns:
-    - List of dicts with result info for each file
-    #
-    print(f"🔍 Searching for balloon files in: {directory}")
-    balloon_data = read_balloon_files(directory, pattern=pattern)
-    print(f"📂 Found {len(balloon_data)} file(s).")
-
-    results = []
-    for file_path, _ in balloon_data:
-        print(f"🚀 Processing {file_path.name}...")
-        result = process_single_balloon(file_path)
-        results.append(result)
-        if result['success']:
-            print(f"✅ Success: {result['tdump_file']}")
-        else:
-            print(f"❌ Failed: {result['message']}")
-
-    # Summary
-    success_count = sum(r['success'] for r in results)
-    failure_count = len(results) - success_count
-    print("\n=== 🎯 Processing Summary ===")
-    print(f"✅ Successful: {success_count}")
-    print(f"❌ Failed: {failure_count}")
-
-    return results
-"""
-
-def process_all_balloons(target_year=None, directory='/home/expai/project/data/', pattern="PBA*", delay_rows=0):
+def process_all_balloons(target_year=None, directory='/home/expai/project/data/', pattern="PBA*", delay_rows=0, skip_freq=10, parallel=True):
     """
     Processes all balloon data files in a directory, optionally filtering by start year.
 
@@ -569,12 +634,16 @@ def process_all_balloons(target_year=None, directory='/home/expai/project/data/'
     Returns:
     - List of dicts with result info for each file
     """
+    tasks = []
     print(f"🔍 Searching for balloon files in: {directory}")
     balloon_data = read_balloon_files(directory, pattern=pattern)
     print(f"📂 Found {len(balloon_data)} file(s).")
+    if isinstance(delay_rows,int):
+        delay_rows = [delay_rows] 
 
     results = []
     for file_path, df in balloon_data:
+        print(df[0:10])
         start_year = get_start_year(df, file_path)
 
         if target_year is not None:
@@ -583,13 +652,46 @@ def process_all_balloons(target_year=None, directory='/home/expai/project/data/'
                 continue
 
         print(f"🚀 Processing {file_path.name}...")
-        result = process_single_balloon(file_path, delay_rows=delay_rows)
-        results.append(result)
+        # index is the stabilization point.
+        result, df, index = process_single_balloon(file_path)
+        df2 = readObs.process_obs_df(df)
+        df2 = df2.reset_index(drop=True)
+        ilist = readObs.get_all_sampling_indices(df2, interval_hours=6)
+        #ilist = ilist.values.tolist()
+        #ilist = [item for sublist in ilist for item in sublist]
+        #ilist = [i for i in ilist if i >= index]
+        #last_index = df.index[-1]
+        #if delay_rows == [0]:
+        #    delay_rows = np.arange(index, last_index+1, skip_freq)  
+        #results.append(result)
+        ilist = [i for i in ilist if i >= index]
+        print('Found stabilization at index:', index)
+        print('Sampling indices for delays:', len(ilist))
+        print('first sampling index', ilist[0])
+        print('last sampling index', ilist[-1])
+        print('number of observation periods', len(df2.new_period.unique()))
         if result['success']:
-            print(f"✅ Success: {result['tdump_file']}")
+            for delay in ilist:
+            #for delay in delay_rows:
+                print('working on delay', delay )
+                if parallel: run=False
+                else: run=True
+                result2 = balloon2traj(df,index,result,delay_rows=delay, run=run)
+                if parallel:
+                    tasks.append(result2)
+                #if result2['success']:
+                #    print(f"✅ Success on delay {delay}: {result2['tdump_file']}")
+                #else:
+                #    print(f"❌ Failed on delay {delay}: {result2['message']}")
+                else:
+                    results.append(result2)
         else:
-            print(f"❌ Failed: {result['message']}")
-
+            print(f"❌ Failed: {file_path.name}, {result['message']}")
+            results.append(result)
+        print('Finished processing balloon\n', file_path.name)      
+    if parallel:
+        run_hysplit_parallel(tasks)
+        return True
     # Summary
     success_count = sum(r['success'] for r in results)
     failure_count = len(results) - success_count
@@ -791,7 +893,22 @@ for year in [25, 24, 23, 22, 21]:
         var_name = f"balloons{year}_d{delay}"
         globals()[var_name] = process_all_balloons(target_year=str(year), delay_rows=delay)
 """
-process = process_all_balloons(target_year = "25", directory = "/home/expai/project/newdata/")
+pattern='PBA_WB8ELK-3*'
+#pattern='PBA_LU1ESY*'
+pattern='PBA*'
+#process = process_all_balloons(target_year = "25", directory = "/home/expai/project/newdata/")
+#delay = list(np.arange(0,1005,5))
+directory = '/home/expai/project/data3/'
+files = glob.glob(directory + 'PBA*txt')
+patterns = [x.split('.')[0] for x in files]
+patterns = [x.split('/')[-1] for x in patterns]
+patterns = [x.split('-')[0] for x in patterns]
+delay = list(np.arange(1500,2000,5))
+
+print(patterns[0])
+for p in patterns:
+    process = process_all_balloons(target_year = "25", directory = "/home/expai/project/data3/", delay_rows=delay, pattern=p + '*')
+
 
 
 
