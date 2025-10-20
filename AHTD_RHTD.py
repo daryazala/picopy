@@ -20,6 +20,7 @@ import hytraj
 import numpy as np
 import os
 import re
+import model
 
 
 def match_trajectories_by_time(modeled_df, observed_df, direction='nearest', tolerance=pd.Timedelta("1H")):
@@ -444,6 +445,31 @@ def add_wind_magnitude_column(df):
     return df
 
 
+def batch(callsign=None, model_dir='/home/expai/project/tdump3/'):
+    # get the dataframe with the observations
+    dfobs = readObs.get_obs_df()
+
+    # get list of callsigns
+    callsign_list = dfobs.balloon_callsign.unique()
+
+    for callsign in callsign_list:
+        # returns dataframe with model data for a particular callsign.
+        # it has all the delays in it.
+        amdf = model.get_model(callsign=callsign, model_dir=model_dir)
+        delay_list = amdf.delay.unique()
+        obs = dfobs[dfobs.balloon_callsign==callsign]
+        for delay in delay_list:
+            dfmodel = amdf[amdf.delay==delay]
+            dfmodel = computeL(dfmodel)
+            matched = match_trajectories_by_time(dfmodel,obs)
+            ahtd = compute_AHTD(matched)
+            rhtd = compute_RHTD(ahtd)
+            rhtd['time_elapsed'] = (rhtd['time']-rhtd['time'].min()).dt.total_seconds() / 3600
+            rhtd = rhtd.drop('balloon_callsign_modeled',axis=1)
+            rhtd.rename(columns={'balloon_callsign_observed': 'balloon_callsign'})
+            return rhtd
+
+
 """
 # reading the observed and modeled trajectory files
 #fnames = glob.glob("/home/expai/project/data/PBA*")
@@ -469,8 +495,8 @@ plt.show()
 #modcall = extract_tdump_callsign('/home/expai/project/tdump/2022/tdump.BSS43.2022-05-19_12:48.txt')
 #matched = find_matching_files()
 
-AHTD = batch_process_AHTD()
-RHTD = batch_process_RHTD()
+#AHTD = batch_process_AHTD()
+#RHTD = batch_process_RHTD()
 #result = haversine(0,179,0,-179)
 
 #df = hytraj.open_dataset('/home/expai/project/tdump/tdump.9A4GE-11.2024-05-01_09:32.d0.txt')
