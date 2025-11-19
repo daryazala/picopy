@@ -562,7 +562,8 @@ def balloon2traj(df,index,inhash,delay_rows=0,
                 output_path='/home/expai/project/model3/',
                 tdir='/home/expai/project/tdump3/',
                 run=True):
-    metadata = get_start(df,index,delay_rows=delay_rows)
+    
+    metadata = get_start(df,index=delay_rows)
     window_size = inhash['window_size']
     threshold = inhash['threshold']
     result = {}
@@ -665,6 +666,7 @@ def process_all_balloons(target_year=None, directory='/home/expai/project/data/'
         #    delay_rows = np.arange(index, last_index+1, skip_freq)  
         #results.append(result)
         ilist = [i for i in ilist if i >= index]
+        ilist.insert(index,0)
         print('Found stabilization at index:', index)
         print('Sampling indices for delays:', len(ilist))
         print('first sampling index', ilist[0])
@@ -893,21 +895,76 @@ for year in [25, 24, 23, 22, 21]:
         var_name = f"balloons{year}_d{delay}"
         globals()[var_name] = process_all_balloons(target_year=str(year), delay_rows=delay)
 """
-pattern='PBA_WB8ELK-3*'
-#pattern='PBA_LU1ESY*'
-pattern='PBA*'
-#process = process_all_balloons(target_year = "25", directory = "/home/expai/project/newdata/")
-#delay = list(np.arange(0,1005,5))
-directory = '/home/expai/project/data3/'
-files = glob.glob(directory + 'PBA*txt')
-patterns = [x.split('.')[0] for x in files]
-patterns = [x.split('/')[-1] for x in patterns]
-patterns = [x.split('-')[0] for x in patterns]
-delay = list(np.arange(1500,2000,5))
+def main(target_year="25", directory='/home/expai/project/data3/', delay_start=1500, delay_end=2000, delay_step=5):
+    """
+    Main function to process all balloons for a given target year.
+    
+    Parameters:
+    -----------
+    target_year : str
+        Target year (last two digits, e.g., "25" for 2025)
+    directory : str
+        Directory containing balloon data files
+    delay_start : int
+        Starting delay value
+    delay_end : int
+        Ending delay value
+    delay_step : int
+        Step size for delay range
+    """
+    print(f"🚀 Starting balloon processing for year {target_year}")
+    print(f"📁 Directory: {directory}")
+    print(f"⏱️  Delay range: {delay_start} to {delay_end} (step: {delay_step})")
+    
+    # Get all balloon files and extract unique patterns
+    files = glob.glob(directory + 'PBA*txt')
+    patterns = [x.split('.')[0] for x in files]
+    patterns = [x.split('/')[-1] for x in patterns]
+    patterns = [x.split('_')[1] for x in patterns]
+    patterns = [f'PBA_{x}' for x in patterns]
 
-print(patterns[0])
-for p in patterns:
-    process = process_all_balloons(target_year = "25", directory = "/home/expai/project/data3/", delay_rows=delay, pattern=p + '*')
+    # Create delay range
+    delay = list(np.arange(delay_start, delay_end, delay_step))
+    
+    print(f"📊 Found {len(patterns)} unique balloon patterns")
+    print(f"📈 Processing {len(delay)} delay values")
+   
+    patterns.sort()
+    if patterns:
+        print(f"🎈 First pattern example: {patterns[0]}")
+
+    # Process each balloon pattern
+    for i, p in enumerate(patterns):
+        print(f"\n🔄 Processing balloon {i+1}/{len(patterns)}: {p}")
+        try:
+            process_all_balloons(
+                target_year=target_year, 
+                directory=directory, 
+                delay_rows=delay, 
+                pattern=p + '*'
+            )
+            print(f"✅ Completed processing: {p}")
+        except Exception as e:
+            print(f"❌ Error processing {p}: {e}")
+    
+    print(f"\n🎯 Finished processing all balloons for year {target_year}")
+
+
+if __name__ == "__main__":
+    import sys
+    
+    # Default target year
+    target_year = "24"
+    
+    # Check if target year is provided as command line argument
+    if len(sys.argv) > 1:
+        target_year = sys.argv[1]
+        print(f"Using target year from command line: {target_year}")
+    else:
+        print(f"Using default target year: {target_year}")
+    
+    # Run main function
+    main(target_year=target_year)
 
 
 

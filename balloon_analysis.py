@@ -15,6 +15,23 @@ from typing import Dict, List, Optional, Tuple, Union
 import warnings
 
 
+class OneBalloon:
+
+    def __init__(self, data: pd.DataFrame):
+        self.data = data
+
+
+    def plot1(self):
+        fig = plt.figure(1)
+        ax = fig.add_subplot(2,1,1)
+
+        ax2 = fig.add_subplot(2,1,2)
+        ax.plot(self.data.longitude, self.data.latitude, '--k.')
+        ax2.plot(self.data.dtime, self.data.latitude,'--k.')
+        return ax
+        
+
+
 class BalloonDataProcessor:
     """
     A class for processing and analyzing balloon observation data.

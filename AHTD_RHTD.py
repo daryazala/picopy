@@ -61,7 +61,51 @@ def match_trajectories_by_time(modeled_df, observed_df, direction='nearest', tol
 
     return merged_df
 
+
+
 def compute_AHTD(df_matched):
+    """
+    Compute and plot AHTD (Absolute Horizontal Transport Distance) over time
+    using the great-circle (haversine) formula.
+
+    Assumes df_matched has columns:
+      - 'time'
+      - 'latitude_modeled', 'longitude_modeled'
+      - 'latitude_observed', 'longitude_observed'
+
+    Returns:
+        df_with_ahtd: Original dataframe with added 'ahtd_km' column
+    """
+    # Check if DataFrame is empty
+    if df_matched is None or len(df_matched) == 0:
+        print("  Warning: No matched data provided to compute_AHTD")
+        return pd.DataFrame()
+
+    # Earth radius in km
+    R = 6371.0
+
+    # Convert degrees to radians
+    lat1 = np.deg2rad(df_matched['latitude_modeled'])
+    lon1 = np.deg2rad(df_matched['longitude_modeled'])
+    lat2 = np.deg2rad(df_matched['latitude_observed'])
+    lon2 = np.deg2rad(df_matched['longitude_observed'])
+
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat / 2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    df_matched['ahtd_km'] = R * c
+
+    # Compute time since launch in hours
+    if 'time' in df_matched.columns and len(df_matched) > 0:
+        launch_time = df_matched['time'].iloc[0]
+        df_matched['hour_since_launch'] = (df_matched['time'] - launch_time).dt.total_seconds() / 3600
+
+    return df_matched
+
+
+def compute_AHTD_old(df_matched):
     """
     Compute and plot AHTD over time using Euclidean approximation.
     
@@ -73,6 +117,10 @@ def compute_AHTD(df_matched):
     Returns:
         df_with_ahtd: Original dataframe with added 'ahtd_km' column
     """
+    # Check if DataFrame is empty
+    if df_matched is None or len(df_matched) == 0:
+        print("  Warning: No matched data provided to compute_AHTD")
+        return pd.DataFrame()
 
     # Constants for approximate lat/lon to km conversion
     # Correcting for longtitudinal boxes changing as you go to the poles
@@ -97,8 +145,9 @@ def compute_AHTD(df_matched):
     df_matched['ahtd_km'] = np.sqrt(dx**2 + dy**2)    
     
     # Compute time since launch in hours
-    launch_time = df_matched['time'].iloc[0]
-    df_matched['hour_since_launch'] = (df_matched['time'] - launch_time).dt.total_seconds() / 3600
+    if len(df_matched) > 0:
+        launch_time = df_matched['time'].iloc[0]
+        df_matched['hour_since_launch'] = (df_matched['time'] - launch_time).dt.total_seconds() / 3600
     
     return df_matched
     
@@ -178,6 +227,9 @@ def computeL(modeled_df):
     Returns:
         df: same DataFrame with new column 'L_km' (in km)
     """
+    # Create a copy to avoid SettingWithCopyWarning
+    modeled_df = modeled_df.copy()
+    
     lats = modeled_df['latitude'].values
     lons = modeled_df['longitude'].values
 
@@ -192,7 +244,20 @@ def computeL(modeled_df):
     return modeled_df
 
 def compute_RHTD(merged_df):
-    merged_df['rhtd'] = merged_df['ahtd_km'] / merged_df['L_km']
+    # Check if DataFrame is empty
+    if merged_df is None or len(merged_df) == 0:
+        print("  Warning: No data provided to compute_RHTD")
+        return pd.DataFrame()
+    
+    # Check if required columns exist
+    if 'ahtd_km' not in merged_df.columns or 'L_km' not in merged_df.columns:
+        print("  Warning: Required columns (ahtd_km, L_km) missing for RHTD computation")
+        return merged_df
+    
+    # Avoid division by zero
+    merged_df['rhtd'] = np.where(merged_df['L_km'] != 0, 
+                                merged_df['ahtd_km'] / merged_df['L_km'], 
+                                np.nan)
     return merged_df
 
 def plot_RHTD(df_matched, return_fig=False):
@@ -452,22 +517,82 @@ def batch(callsign=None, model_dir='/home/expai/project/tdump3/'):
     # get list of callsigns
     callsign_list = dfobs.balloon_callsign.unique()
 
+
+    callsign_list.sort()
+    
+    total = pd.DataFrame()  # Initialize empty dataframe to collect all results
+
     for callsign in callsign_list:
+        print(f"Processing callsign: {callsign}")
+        
         # returns dataframe with model data for a particular callsign.
         # it has all the delays in it.
         amdf = model.get_model(callsign=callsign, model_dir=model_dir)
+        # check if amdf is empty
+        try:
+            if amdf.empty:
+                print(f"callsign not found in model data {callsign}")
+                continue
+            if 'delay' not in amdf.columns:
+                print(f'delay not found in model {callsign}')
+                continue
+        except:
+             print(f"callsign not found in model data {callsign}")
+             continue
         delay_list = amdf.delay.unique()
         obs = dfobs[dfobs.balloon_callsign==callsign]
         for delay in delay_list:
-            dfmodel = amdf[amdf.delay==delay]
-            dfmodel = computeL(dfmodel)
-            matched = match_trajectories_by_time(dfmodel,obs)
-            ahtd = compute_AHTD(matched)
-            rhtd = compute_RHTD(ahtd)
-            rhtd['time_elapsed'] = (rhtd['time']-rhtd['time'].min()).dt.total_seconds() / 3600
-            rhtd = rhtd.drop('balloon_callsign_modeled',axis=1)
-            rhtd.rename(columns={'balloon_callsign_observed': 'balloon_callsign'})
-            return rhtd
+            try:
+                print(f"  Processing delay: {delay}")
+                dfmodel = amdf[amdf.delay==delay].copy()
+                
+                # Check if model data exists for this delay
+                if len(dfmodel) == 0:
+                    print(f"    No model data for delay {delay}, skipping...")
+                    continue
+                
+                dfmodel = computeL(dfmodel)
+                matched = match_trajectories_by_time(dfmodel, obs)
+                
+                # Check if any matches were found
+                if len(matched) == 0:
+                    print(f"    No matched trajectories found for delay {delay}, skipping...")
+                    continue
+                
+                ahtd = compute_AHTD(matched)
+                
+                # Check if AHTD computation was successful
+                if len(ahtd) == 0:
+                    print(f"    AHTD computation failed for delay {delay}, skipping...")
+                    continue
+                
+                rhtd = compute_RHTD(ahtd)
+                
+                # Check if RHTD computation was successful
+                if len(rhtd) == 0:
+                    print(f"    RHTD computation failed for delay {delay}, skipping...")
+                    continue
+                
+                # Add time elapsed column safely
+                if 'time' in rhtd.columns and len(rhtd) > 0:
+                    rhtd['time_elapsed'] = (rhtd['time'] - rhtd['time'].min()).dt.total_seconds() / 3600
+                
+                # Drop and rename columns safely
+                if 'balloon_callsign_modeled' in rhtd.columns:
+                    rhtd = rhtd.drop('balloon_callsign_modeled', axis=1)
+                if 'balloon_callsign_observed' in rhtd.columns:
+                    rhtd = rhtd.rename(columns={'balloon_callsign_observed': 'balloon_callsign'})
+                
+                rhtd['delay'] = delay  # Add delay column to track which delay this data is from
+                
+                # Append to total dataframe
+                total = pd.concat([total, rhtd], ignore_index=True)
+                print(f"    Successfully processed delay {delay}: {len(rhtd)} rows")
+                
+            except Exception as e:
+                print(f"    Error processing delay {delay} for {callsign}: {e}")
+                continue
+    return total
 
 
 """
@@ -502,7 +627,51 @@ plt.show()
 #df = hytraj.open_dataset('/home/expai/project/tdump/tdump.9A4GE-11.2024-05-01_09:32.d0.txt')
 #wind = add_wind_magnitude_column(df)
 
+def main(model_dir=None):
+    """
+    Main function to run batch processing of AHTD/RHTD calculations.
+    
+    Parameters:
+        model_dir: Optional string path to model directory. 
+                  Defaults to '/home/expai/project/tdump3/' if not provided.
+    """
+    if model_dir is None:
+        model_dir = '/home/expai/project/tdump3/'
+    
+    print(f"Starting batch processing with model directory: {model_dir}")
+    
+    try:
+        # Run the batch processing
+        result = batch(model_dir=model_dir)
+        
+        print(f"Batch processing completed successfully!")
+        print(f"Total rows processed: {len(result)}")
+        print(f"Unique callsigns: {result['balloon_callsign'].nunique()}")
+        print(f"Unique delays: {sorted(result['delay'].unique())}")
+        
+        # Save results to CSV
+        output_file = 'batch_rhtd_results.csv'
+        result.to_csv(output_file, index=False)
+        print(f"Results saved to: {output_file}")
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error during batch processing: {e}")
+        return None
 
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Process AHTD/RHTD calculations for balloon trajectories')
+    parser.add_argument('--model-dir', type=str, default='/home/expai/project/tdump3/',
+                       help='Path to model directory (default: /home/expai/project/tdump3/)')
+    
+    args = parser.parse_args()
+    
+    # Run main function with command line arguments
+    result = main(model_dir=args.model_dir)
 
 
 
