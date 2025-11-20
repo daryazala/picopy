@@ -1,538 +1,662 @@
 #!/usr/bin/env python
 # coding: utf-8
-"""
-Balloon Observations Analysis Module
 
-This module provides comprehensive analysis tools for balloon observation data,
-including geographic distribution, temporal analysis, and autocorrelation functions.
-"""
+# # Balloon Observations Analysis
+# 
+# This notebook focuses on analyzing balloon observation data, including trajectory patterns, altitude profiles, and temporal analysis.
 
+# In[1]:
+
+
+get_ipython().run_line_magic('load_ext', 'autoreload')
+
+
+# In[2]:
+
+
+# Import necessary libraries
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import datetime
 from matplotlib.dates import DateFormatter
-from scipy.signal import correlate
-from scipy.interpolate import interp1d
-from typing import Dict, List, Optional, Tuple, Union
-import warnings
 
-# Set up plotting defaults
+# Set up plotting style
 plt.style.use('default')
 sns.set_palette('husl')
+
+# Configure matplotlib for better datetime handling
 plt.rcParams['figure.figsize'] = (12, 8)
 plt.rcParams['axes.grid'] = True
 
-try:
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-    CARTOPY_AVAILABLE = True
-except ImportError:
-    CARTOPY_AVAILABLE = False
-    warnings.warn("Cartopy not available. Geographic mapping features will be limited.")
+
+# In[3]:
 
 
-class DataCleaning;
-    """
-    class for checking integrity of balloon data
-    """
-    def __init__(self,df):
-        
+import balloon_analysis as ba
 
 
-class BalloonDataLoader:
-    """Class for loading and initial processing of balloon observation data."""
+# In[4]:
+
+
+# Import custom modules
+import readObs
+
+# Load observations data
+dfobs = readObs.get_obs_df()
+print(f"Loaded {len(dfobs)} observation records")
+print(f"Columns: {list(dfobs.columns)}")
+
+
+# 
+
+# In[5]:
+
+
+dfobs.to_csv('obsdf.csv')
+
+
+# In[10]:
+
+
+cslist = dfobs.balloon_callsign.unique()
+[x for x in cslist if 'KC3LBR-485' in x]
+
+
+# 
+
+# dfobs.to_csv('balloon_obs.csv')
+
+# In[11]:
+
+
+# Display basic information about the dataset
+print("Dataset Overview:")
+print(f"Shape: {dfobs.shape}")
+print(f"Date range: {dfobs['time'].min()} to {dfobs['time'].max()}")
+print(f"Unique balloons: {dfobs['balloon_callsign'].nunique()}")
+print("\nBalloon callsigns:")
+print(dfobs['balloon_callsign'].value_counts())
+
+
+# In[6]:
+
+
+# Convert time column to datetime if needed
+if not pd.api.types.is_datetime64_any_dtype(dfobs['time']):
+    dfobs['time'] = pd.to_datetime(dfobs['time'])
+
+# Create a datetime column for easier plotting
+dfobs['dtime'] = pd.to_datetime(dfobs['time'])
+
+# Display first few rows
+dfobs.head()
+
+
+# In[7]:
+
+
+badlist = ['KC3LBR-485', 'W0Y-1', 'W4CQD-2']
+
+
+# In[8]:
+
+
+cslist = dfobs['balloon_callsign'].unique()
+df2 = dfobs[dfobs['balloon_callsign'] == badlist[1]]
+df2
+df2 = readObs.process_obs_df(df2)
+print(df2.new_period.unique())
+df2
+
+
+# In[9]:
+
+
+get_ipython().run_line_magic('autoreload', '')
+
+aballoon = ba.OneBalloon(df2)
+
+
+# In[10]:
+
+
+get_ipython().run_line_magic('autoreload', '')
+ax = aballoon.plot1()
+
+
+# In[9]:
+
+
+df2 = df2.reset_index()
+df2
+
+
+# ## Geographic Distribution Analysis
+
+# In[5]:
+
+
+# Plot all observations on a map
+plt.figure(figsize=(12, 10))
+scatter = plt.scatter(dfobs['longitude'], dfobs['latitude'], 
+                     c=dfobs['altitude'], cmap='viridis', 
+                     s=10, alpha=0.6)
+plt.colorbar(scatter, label='Altitude (m)')
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+plt.title('All Balloon Observations - Colored by Altitude')
+plt.grid(True, alpha=0.3)
+plt.show()
+
+
+# In[6]:
+
+
+# instead of scatter plot use hexbin for better density representation
+plt.figure(figsize=(12, 10))
+gridsize = int(360/5)  # 5 degree grid
+hb = plt.hexbin(dfobs['longitude'], dfobs['latitude'],
+                gridsize=gridsize, cmap='viridis', mincnt=1)
+plt.colorbar(hb, label='Counts')
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+plt.title('Balloon Observations Density Map')
+plt.grid(True, alpha=0.3)
+plt.show()
+
+
+# In[7]:
+
+
+# 2D histogram with 5 degree bins - excluding same-segment contributions
+fig = plt.figure(figsize=(12, 10))
+ax = fig.add_subplot(111)
+
+# Define bin edges
+xedges = np.arange(-180, 185, 5)
+yedges = np.arange(-90, 95, 5)
+
+# Method 1: Filter out points that are too close in time (same segment)
+# This removes contributions from the same continuous observation period
+min_time_separation = pd.Timedelta(hours=6)  # Minimum time separation
+dfobs = readObs.process_obs_df(dfobs)
+
+filtered_data = []
+for callsign in dfobs['balloon_callsign'].unique():
+    balloon_data = dfobs[dfobs['balloon_callsign'] == callsign].sort_values('dtime')
     
-    def __init__(self):
-        """Initialize the data loader."""
-        self.data = None
-        self.metadata = {}
+    # Identify segments (periods separated by large gaps)
+    time_gaps = balloon_data['dtime'].diff()
+    segment_breaks = time_gaps > min_time_separation
+    balloon_data['segment_id'] = segment_breaks.cumsum()
     
-    def load_data(self, use_readobs: bool = True) -> pd.DataFrame:
-        """
-        Load balloon observations data.
+    # Only keep one representative point per segment per spatial bin
+    for seg_id in balloon_data['segment_id'].unique():
+        seg_data = balloon_data[balloon_data['segment_id'] == seg_id]
         
-        Parameters:
-        -----------
-        use_readobs : bool
-            Whether to use readObs module for loading data
-            
-        Returns:
-        --------
-        pd.DataFrame : Loaded balloon observations
-        """
-        if use_readobs:
-            import readObs
-            self.data = readObs.get_obs_df()
-        else:
-            raise NotImplementedError("Alternative data loading not implemented")
+        # Assign each point to a spatial bin
+        lon_bins = np.digitize(seg_data['longitude'], xedges)
+        lat_bins = np.digitize(seg_data['latitude'], yedges)
+        seg_data = seg_data.copy()
+        seg_data['spatial_bin'] = lon_bins * 1000 + lat_bins  # Unique bin ID
         
-        # Convert time columns
-        if not pd.api.types.is_datetime64_any_dtype(self.data['time']):
-            self.data['time'] = pd.to_datetime(self.data['time'])
-        self.data['dtime'] = pd.to_datetime(self.data['time'])
-        
-        # Store metadata
-        self.metadata = {
-            'n_records': len(self.data),
-            'columns': list(self.data.columns),
-            'date_range': (self.data['time'].min(), self.data['time'].max()),
-            'n_balloons': self.data['balloon_callsign'].nunique(),
-            'balloon_counts': self.data['balloon_callsign'].value_counts().to_dict()
-        }
-        
-        return self.data
+        # Take only one point per spatial bin per segment (e.g., first occurrence)
+        seg_filtered = seg_data.groupby('spatial_bin').first().reset_index()
+        filtered_data.append(seg_filtered)
+
+if filtered_data:
+    filtered_df = pd.concat(filtered_data, ignore_index=True)
     
-    def get_basic_info(self) -> Dict:
-        """Get basic information about the loaded data."""
-        if self.data is None:
-            raise ValueError("No data loaded. Call load_data() first.")
-        
-        return self.metadata
+    # Create histogram with filtered data
+    H, xedges, yedges = np.histogram2d(filtered_df['longitude'], filtered_df['latitude'], 
+                                       bins=[xedges, yedges])
     
-    def print_summary(self) -> None:
-        """Print a summary of the loaded data."""
-        if self.data is None:
-            raise ValueError("No data loaded. Call load_data() first.")
-        
-        print("Dataset Overview:")
-        print(f"Shape: {self.data.shape}")
-        print(f"Date range: {self.metadata['date_range'][0]} to {self.metadata['date_range'][1]}")
-        print(f"Unique balloons: {self.metadata['n_balloons']}")
-        print(f"Columns: {self.metadata['columns']}")
-        print("\nBalloon callsigns:")
-        for callsign, count in list(self.metadata['balloon_counts'].items())[:10]:
-            print(f"  {callsign}: {count}")
-        if len(self.metadata['balloon_counts']) > 10:
-            print(f"  ... and {len(self.metadata['balloon_counts']) - 10} more")
+    # Plot
+    c = np.where(H.T==0, np.nan, H.T)
+    cb = ax.imshow(c, origin='lower', aspect='auto', 
+                   extent=[-180, 180, -90, 90], cmap='viridis')
+    plt.colorbar(cb, label='Unique Observation Segments')
+    ax.set_xlabel('Longitude')
+    ax.set_ylabel('Latitude')
+    ax.set_title('Balloon Observations Density - Filtered by Segments\n(One point per spatial bin per continuous flight segment)')
+    ax.grid(True, alpha=0.3)
+    
+    print(f"Original data points: {len(dfobs)}")
+    print(f"Filtered data points: {len(filtered_df)}")
+    print(f"Reduction factor: {len(dfobs)/len(filtered_df):.1f}x")
+else:
+    print("No data available after filtering")
+plt.savefig('balloon_observations_filtered_density.png', dpi=300)
+plt.show()
 
 
-class GeographicAnalyzer:
-    """Class for geographic distribution analysis of balloon observations."""
+# In[6]:
+
+
+# Create mean wind speed DataFrame with proper spatial bin coordinates
+if 'wind_speed' in filtered_df.columns and not filtered_df['wind_speed'].isna().all():
+    # Add proper lon_bin and lat_bin columns to filtered_df
+    filtered_df['lon_bin'] = np.digitize(filtered_df['longitude'], xedges) - 1
+    filtered_df['lat_bin'] = np.digitize(filtered_df['latitude'], yedges) - 1
     
-    def __init__(self, data: pd.DataFrame):
-        """Initialize with balloon observation data."""
-        self.data = data
+    # Group by spatial coordinates and calculate mean wind speed
+    mean_wind_df = filtered_df.groupby(['lon_bin', 'lat_bin']).agg({
+        'wind_speed': 'mean',
+        'longitude': 'mean',  # Keep representative coordinates
+        'latitude': 'mean'
+    }).reset_index()
+    
+    print(f"Created mean_wind_df with {len(mean_wind_df)} spatial bins")
+    print("Sample of mean_wind_df:")
+    print(mean_wind_df.head())
+    
+    # Create wind speed variation DataFrame (standard deviation)
+    std_wind_df = filtered_df.groupby(['lon_bin', 'lat_bin']).agg({
+        'wind_speed': 'std',
+        'longitude': 'mean',  # Keep representative coordinates
+        'latitude': 'mean'
+    }).reset_index()
+    
+    print(f"\nCreated std_wind_df with {len(std_wind_df)} spatial bins")
+    print("Sample of std_wind_df:")
+    print(std_wind_df.head())
+else:
+    print("Wind speed data not available for wind analysis")
+    mean_wind_df = None
+    std_wind_df = None
+
+
+# In[5]:
+
+
+# Plot mean wind speed in spatial bins
+if mean_wind_df is not None and len(mean_wind_df) > 0:
+    # Create a grid for plotting
+    mean_wind_grid = np.full((len(xedges)-1, len(yedges)-1), np.nan)
+    
+    # Fill the grid with mean wind speeds
+    for _, row in mean_wind_df.iterrows():
+        xi = int(row['lon_bin'])
+        yi = int(row['lat_bin'])
+        if 0 <= xi < mean_wind_grid.shape[0] and 0 <= yi < mean_wind_grid.shape[1]:
+            mean_wind_grid[xi, yi] = row['wind_speed']
+    
+    # Plot the mean wind speed grid
+    plt.figure(figsize=(12, 10))
+    mesh = plt.pcolormesh(xedges, yedges, mean_wind_grid.T, cmap='viridis', 
+                         shading='auto', alpha=0.8)
+    plt.colorbar(mesh, label='Mean Wind Speed')
+    plt.xlabel('Longitude')
+    plt.ylabel('Latitude')
+    plt.title('Mean Wind Speed in Each Spatial Bin (Filtered Data)')
+    plt.grid(True, alpha=0.3)
+    
+    # Add statistics
+    valid_wind_speeds = mean_wind_df['wind_speed'].dropna()
+    if len(valid_wind_speeds) > 0:
+        plt.figtext(0.02, 0.02, 
+                   f'Stats: Mean={valid_wind_speeds.mean():.2f}, '
+                   f'Std={valid_wind_speeds.std():.2f}, '
+                   f'Bins with data={len(valid_wind_speeds)}',
+                   fontsize=10, bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+    
+    plt.tight_layout()
+    plt.show()
+else:
+    print("Cannot create mean wind speed plot - no valid wind speed data found")
+
+
+# In[11]:
+
+
+# Plot wind speed variation (standard deviation) in spatial bins
+if std_wind_df is not None and len(std_wind_df) > 0:
+    # Create a grid for plotting
+    std_wind_grid = np.full((len(xedges)-1, len(yedges)-1), np.nan)
+    
+    # Fill the grid with wind speed standard deviations
+    for _, row in std_wind_df.iterrows():
+        xi = int(row['lon_bin'])
+        yi = int(row['lat_bin'])
+        if 0 <= xi < std_wind_grid.shape[0] and 0 <= yi < std_wind_grid.shape[1]:
+            std_wind_grid[xi, yi] = row['wind_speed']
+    
+    # Plot the wind speed variation grid
+    plt.figure(figsize=(12, 10))
+    mesh = plt.pcolormesh(xedges, yedges, std_wind_grid.T, cmap='plasma', 
+                         shading='auto', alpha=0.8)
+    plt.colorbar(mesh, label='Wind Speed Std Dev (m/s)')
+    plt.xlabel('Longitude')
+    plt.ylabel('Latitude')
+    plt.title('Wind Speed Variation (Std Dev) in Each Spatial Bin (Filtered Data)')
+    plt.grid(True, alpha=0.3)
+    
+    # Add statistics
+    valid_wind_stds = std_wind_df['wind_speed'].dropna()
+    if len(valid_wind_stds) > 0:
+        plt.figtext(0.02, 0.02, 
+                   f'Stats: Mean Std={valid_wind_stds.mean():.2f}, '
+                   f'Max Std={valid_wind_stds.max():.2f}, '
+                   f'Bins with data={len(valid_wind_stds)}',
+                   fontsize=10, bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Create comparison plot showing both mean and variation
+    if mean_wind_df is not None and len(mean_wind_df) > 0:
+        fig, axes = plt.subplots(1, 2, figsize=(20, 8))
         
-    def plot_observations_map(self, color_by: str = 'altitude', 
-                             figsize: Tuple[int, int] = (12, 10),
-                             title: str = None) -> None:
-        """
-        Plot all observations on a scatter map.
+        # Plot mean wind speed
+        mean_wind_grid = np.full((len(xedges)-1, len(yedges)-1), np.nan)
+        for _, row in mean_wind_df.iterrows():
+            xi = int(row['lon_bin'])
+            yi = int(row['lat_bin'])
+            if 0 <= xi < mean_wind_grid.shape[0] and 0 <= yi < mean_wind_grid.shape[1]:
+                mean_wind_grid[xi, yi] = row['wind_speed']
         
-        Parameters:
-        -----------
-        color_by : str
-            Column to color points by
-        figsize : tuple
-            Figure size
-        title : str
-            Plot title
-        """
-        plt.figure(figsize=figsize)
-        scatter = plt.scatter(self.data['longitude'], self.data['latitude'], 
-                             c=self.data[color_by], cmap='viridis', 
-                             s=10, alpha=0.6)
-        plt.colorbar(scatter, label=color_by.replace('_', ' ').title())
-        plt.xlabel('Longitude')
-        plt.ylabel('Latitude')
-        plt.title(title or f'All Balloon Observations - Colored by {color_by.title()}')
-        plt.grid(True, alpha=0.3)
+        mesh1 = axes[0].pcolormesh(xedges, yedges, mean_wind_grid.T, cmap='viridis', 
+                                  shading='auto', alpha=0.8)
+        plt.colorbar(mesh1, ax=axes[0], label='Mean Wind Speed (m/s)')
+        axes[0].set_xlabel('Longitude')
+        axes[0].set_ylabel('Latitude')
+        axes[0].set_title('Mean Wind Speed')
+        axes[0].grid(True, alpha=0.3)
+        
+        # Plot wind speed variation
+        mesh2 = axes[1].pcolormesh(xedges, yedges, std_wind_grid.T, cmap='plasma', 
+                                  shading='auto', alpha=0.8)
+        plt.colorbar(mesh2, ax=axes[1], label='Wind Speed Std Dev (m/s)')
+        axes[1].set_xlabel('Longitude')
+        axes[1].set_ylabel('Latitude')
+        axes[1].set_title('Wind Speed Variation (Std Dev)')
+        axes[1].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
         plt.show()
+        
+        # Print comparison statistics
+        print("\n=== WIND SPEED STATISTICS COMPARISON ===")
+        print("Metric                    | Mean      | Std Dev")
+        print("-" * 50)
+        
+        mean_stats = mean_wind_df['wind_speed'].dropna()
+        std_stats = std_wind_df['wind_speed'].dropna()
+        
+        if len(mean_stats) > 0 and len(std_stats) > 0:
+            print(f"Overall average           | {mean_stats.mean():.3f}     | {std_stats.mean():.3f}")
+            print(f"Maximum value             | {mean_stats.max():.3f}     | {std_stats.max():.3f}")
+            print(f"Minimum value             | {mean_stats.min():.3f}     | {std_stats.min():.3f}")
+            print(f"Spatial bins with data    | {len(mean_stats):7d}   | {len(std_stats):7d}")
+            
+            # Correlation between mean and std
+            # Match bins between mean and std DataFrames
+            merged_stats = pd.merge(mean_wind_df[['lon_bin', 'lat_bin', 'wind_speed']], 
+                                   std_wind_df[['lon_bin', 'lat_bin', 'wind_speed']], 
+                                   on=['lon_bin', 'lat_bin'], suffixes=('_mean', '_std'))
+            
+            if len(merged_stats) > 1:
+                correlation = merged_stats['wind_speed_mean'].corr(merged_stats['wind_speed_std'])
+                print(f"\nCorrelation between mean and std: {correlation:.3f}")
+                
+                # Scatter plot of mean vs std
+                plt.figure(figsize=(10, 8))
+                plt.scatter(merged_stats['wind_speed_mean'], merged_stats['wind_speed_std'], 
+                           alpha=0.7, s=50, edgecolors='black', linewidth=0.5)
+                plt.xlabel('Mean Wind Speed (m/s)')
+                plt.ylabel('Wind Speed Std Dev (m/s)')
+                plt.title(f'Mean vs Standard Deviation of Wind Speed\n(Correlation: {correlation:.3f})')
+                plt.grid(True, alpha=0.3)
+                
+                # Add trend line
+                z = np.polyfit(merged_stats['wind_speed_mean'], merged_stats['wind_speed_std'], 1)
+                p = np.poly1d(z)
+                x_trend = np.linspace(merged_stats['wind_speed_mean'].min(), 
+                                    merged_stats['wind_speed_mean'].max(), 100)
+                plt.plot(x_trend, p(x_trend), "r--", alpha=0.8, linewidth=2, 
+                        label=f'Trend: y = {z[0]:.3f}x + {z[1]:.3f}')
+                plt.legend()
+                plt.tight_layout()
+                plt.show()
+        
+else:
+    print("Cannot create wind speed variation plot - no valid wind speed data found")
+
+
+# In[9]:
+
+
+# Create mean wind speed DataFrame with proper spatial bin coordinates
+# First, extract lon_bin and lat_bin from the spatial_bin ID
+filtered_df['lon_bin'] = filtered_df['spatial_bin'] // 1000
+filtered_df['lat_bin'] = filtered_df['spatial_bin'] % 1000
+
+# Group by spatial bin and calculate mean wind speed
+mean_wind_df = filtered_df.groupby(['spatial_bin', 'lon_bin', 'lat_bin'])['wind_speed'].mean().reset_index()
+
+print(f"Mean wind speed calculated for {len(mean_wind_df)} spatial bins")
+print("Sample of mean_wind_df:")
+print(mean_wind_df.head())
+
+# Show the structure
+print(f"\nColumns: {list(mean_wind_df.columns)}")
+print(f"Wind speed range: {mean_wind_df['wind_speed'].min():.2f} - {mean_wind_df['wind_speed'].max():.2f}")
+fd['xi'] = fd['spatial_bin'] % 1000
+fd['yi'] = fd['spatial_bin'] // 1000    
+# make it the mean in each xi, yi bin
+fd2 = fd.pivot(index='yi', columns='xi', values='wind_speed')
+fd2
+
+
+# In[ ]:
+
+
+# Create a 2D grid for visualization of mean wind speeds
+# Define the grid dimensions based on the bin edges
+n_lon_bins = len(xedges) - 1
+n_lat_bins = len(yedges) - 1
+mean_wind_grid = np.full((n_lon_bins, n_lat_bins), np.nan)
+
+# Fill the grid with mean wind speeds
+for _, row in mean_wind_df.iterrows():
+    xi = int(row['lon_bin'])
+    yi = int(row['lat_bin'])
+    # Check bounds (bin indices should be 1-based from np.digitize, so subtract 1)
+    xi_idx = xi - 1
+    yi_idx = yi - 1
+    if 0 <= xi_idx < mean_wind_grid.shape[0] and 0 <= yi_idx < mean_wind_grid.shape[1]:
+        mean_wind_grid[xi_idx, yi_idx] = row['wind_speed']
+
+# Plot the mean wind speed grid
+plt.figure(figsize=(12, 10))
+# Create meshgrid for plotting
+X, Y = np.meshgrid(xedges, yedges)
+mesh = plt.pcolormesh(X, Y, mean_wind_grid.T, cmap='viridis', shading='flat')
+plt.colorbar(mesh, label='Mean Wind Speed (m/s)')
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+plt.title('Mean Wind Speed in Each Spatial Bin (Filtered Data)')
+plt.grid(True, alpha=0.3)
+
+# Add statistics
+valid_bins = ~np.isnan(mean_wind_grid)
+n_valid = np.sum(valid_bins)
+mean_overall = np.nanmean(mean_wind_grid)
+plt.text(0.02, 0.98, f'Valid bins: {n_valid}\nOverall mean: {mean_overall:.2f} m/s', 
+         transform=plt.gca().transAxes, verticalalignment='top', 
+         bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+plt.show()
+
+print(f"Grid dimensions: {mean_wind_grid.shape}")
+print(f"Bins with data: {n_valid} / {mean_wind_grid.size}")
+print(f"Coverage: {100*n_valid/mean_wind_grid.size:.1f}%")        Time column name
+    value_col : str  
+        Value column for autocorrelation
+    groupby_col : str
+        Column to group by (e.g., balloon callsign)
+    max_lag_hours : float
+        Maximum lag in hours
+    min_segment_separation_hours : float
+        Minimum hours between segments to be considered independent
+    plot : bool
+        Whether to create plots
+        
+    Returns:
+    --------
+    dict : Autocorrelation results excluding same-segment contributions
+    """
     
-    def plot_density_map(self, bin_size: float = 5.0,
-                        figsize: Tuple[int, int] = (12, 10),
-                        title: str = "Balloon Observations Density Map") -> None:
-        """
-        Plot observation density using hexbin.
-        
-        Parameters:
-        -----------
-        bin_size : float
-            Size of density bins in degrees
-        figsize : tuple
-            Figure size
-        title : str
-            Plot title
-        """
-        plt.figure(figsize=figsize)
-        gridsize = int(360 / bin_size)
-        hb = plt.hexbin(self.data['longitude'], self.data['latitude'],
-                        gridsize=gridsize, cmap='viridis', mincnt=1)
-        plt.colorbar(hb, label='Counts')
-        plt.xlabel('Longitude')
-        plt.ylabel('Latitude')
-        plt.title(title)
-        plt.grid(True, alpha=0.3)
-        plt.show()
+    from scipy.signal import correlate
     
-    def plot_launch_locations(self, figsize: Tuple[int, int] = (16, 12),
-                             annotate: bool = False) -> pd.DataFrame:
-        """
-        Plot launch locations using Cartopy if available.
+    if value_col not in df.columns:
+        print(f"Warning: '{value_col}' column not found")
+        return None
+    
+    all_pairs = []
+    
+    # Process each balloon separately
+    for callsign in df[groupby_col].unique():
+        balloon_data = df[df[groupby_col] == callsign].copy()
+        balloon_data = balloon_data.sort_values(time_col).dropna(subset=[value_col, time_col])
         
-        Parameters:
-        -----------
-        figsize : tuple
-            Figure size
-        annotate : bool
-            Whether to annotate with callsigns
+        if len(balloon_data) < 2:
+            continue
             
-        Returns:
-        --------
-        pd.DataFrame : Launch locations data
-        """
-        # Get launch locations (first observation per balloon)
-        launch_locations = self.data.groupby('balloon_callsign').first().reset_index()
+        # Convert time to datetime if needed
+        if not pd.api.types.is_datetime64_any_dtype(balloon_data[time_col]):
+            balloon_data[time_col] = pd.to_datetime(balloon_data[time_col])
         
-        if CARTOPY_AVAILABLE:
-            fig = plt.figure(figsize=figsize)
-            ax = plt.axes(projection=ccrs.PlateCarree())
+        # Identify segments based on time gaps
+        time_gaps = balloon_data[time_col].diff()
+        segment_breaks = time_gaps > pd.Timedelta(hours=min_segment_separation_hours)
+        balloon_data['segment_id'] = segment_breaks.cumsum()
+        
+        # Create all pairs excluding same-segment pairs
+        for i in range(len(balloon_data)):
+            for j in range(i+1, len(balloon_data)):
+                # Skip if same segment
+                if balloon_data.iloc[i]['segment_id'] == balloon_data.iloc[j]['segment_id']:
+                    continue
+                
+                time_diff = (balloon_data.iloc[j][time_col] - balloon_data.iloc[i][time_col]).total_seconds() / 3600
+                
+                # Only include pairs within max lag
+                if time_diff <= max_lag_hours:
+                    value_product = balloon_data.iloc[i][value_col] * balloon_data.iloc[j][value_col]
+                    all_pairs.append({
+                        'lag_hours': time_diff,
+                        'value_product': value_product,
+                        'value1': balloon_data.iloc[i][value_col],
+                        'value2': balloon_data.iloc[j][value_col],
+                        'callsign': callsign
+                    })
+    
+    if not all_pairs:
+        print("No valid cross-segment pairs found")
+        return None
+    
+    pairs_df = pd.DataFrame(all_pairs)
+    
+    # Bin the lag times
+    bin_width = 1.0  # 1 hour bins
+    lag_bins = np.arange(0, max_lag_hours + bin_width, bin_width)
+    lag_centers = 0.5 * (lag_bins[:-1] + lag_bins[1:])
+    
+    # Compute autocorrelation for each bin
+    autocorr = []
+    counts = []
+    
+    # Calculate overall variance for normalization
+    all_values = np.concatenate([pairs_df['value1'].values, pairs_df['value2'].values])
+    mean_val = np.mean(all_values)
+    var_val = np.var(all_values)
+    
+    for i, lag_center in enumerate(lag_centers):
+        # Find pairs in this lag bin
+        in_bin = ((pairs_df['lag_hours'] >= lag_bins[i]) & 
+                  (pairs_df['lag_hours'] < lag_bins[i+1]))
+        
+        if in_bin.sum() > 0:
+            # Mean of products minus product of means
+            bin_pairs = pairs_df[in_bin]
+            mean_product = bin_pairs['value_product'].mean()
             
-            # Add map features
-            ax.add_feature(cfeature.COASTLINE)
-            ax.add_feature(cfeature.BORDERS)
-            ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.5)
-            ax.add_feature(cfeature.LAND, color='lightgray', alpha=0.5)
-            ax.add_feature(cfeature.LAKES, color='lightblue', alpha=0.5)
-            ax.add_feature(cfeature.RIVERS, color='blue', alpha=0.3)
-            
-            # Add gridlines
-            ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, alpha=0.5)
-            
-            # Plot launch locations
-            scatter = ax.scatter(launch_locations['longitude'], launch_locations['latitude'], 
-                                c='r', s=50, alpha=0.8, edgecolors='black', linewidth=1.5,
-                                transform=ccrs.PlateCarree())
-            
-            if annotate:
-                for i, row in launch_locations.iterrows():
-                    ax.annotate(row['balloon_callsign'], 
-                               (row['longitude'], row['latitude']),
-                               xytext=(8, 8), textcoords='offset points',
-                               fontsize=9, fontweight='bold', alpha=0.9,
-                               bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7),
-                               transform=ccrs.PlateCarree())
-            
-            # Set extent with padding
-            lon_min, lon_max = launch_locations['longitude'].min(), launch_locations['longitude'].max()
-            lat_min, lat_max = launch_locations['latitude'].min(), launch_locations['latitude'].max()
-            lon_range = lon_max - lon_min
-            lat_range = lat_max - lat_min
-            padding = 0.1
-            
-            ax.set_extent([lon_min - padding * lon_range, lon_max + padding * lon_range,
-                           lat_min - padding * lat_range, lat_max + padding * lat_range],
-                          crs=ccrs.PlateCarree())
-            
-            plt.title(f'Launch Locations of All Balloons (n={len(launch_locations)})', 
-                      fontsize=14, fontweight='bold', pad=20)
-            plt.tight_layout()
+            # Normalize by variance
+            autocorr_val = (mean_product - mean_val**2) / var_val
+            autocorr.append(autocorr_val)
+            counts.append(len(bin_pairs))
         else:
-            # Fallback to regular scatter plot
-            plt.figure(figsize=figsize)
-            plt.scatter(launch_locations['longitude'], launch_locations['latitude'], 
-                       c='r', s=50, alpha=0.8, edgecolors='black', linewidth=1.5)
-            plt.xlabel('Longitude')
-            plt.ylabel('Latitude')
-            plt.title(f'Launch Locations of All Balloons (n={len(launch_locations)})')
-            plt.grid(True, alpha=0.3)
+            autocorr.append(np.nan)
+            counts.append(0)
+    
+    autocorr = np.array(autocorr)
+    counts = np.array(counts)
+    
+    # Find decorrelation time
+    decorr_threshold = 1/np.e * autocorr[0] if not np.isnan(autocorr[0]) else 1/np.e
+    valid_autocorr = autocorr[~np.isnan(autocorr)]
+    valid_lags = lag_centers[~np.isnan(autocorr)]
+    
+    if len(valid_autocorr) > 1:
+        decorr_idx = np.where(valid_autocorr < decorr_threshold)[0]
+        decorr_time = valid_lags[decorr_idx[0]] if len(decorr_idx) > 0 else None
+    else:
+        decorr_time = None
+    
+    if plot:
+        fig, axes = plt.subplots(2, 1, figsize=(12, 10))
         
+        # Plot 1: Autocorrelation function
+        valid_mask = ~np.isnan(autocorr)
+        axes[0].plot(lag_centers[valid_mask], autocorr[valid_mask], 'ro-', 
+                    linewidth=2, markersize=6, label='Cross-segment autocorr')
+        axes[0].axhline(y=decorr_threshold, color='orange', linestyle='--', 
+                       label=f'1/e threshold ({decorr_threshold:.3f})')
+        
+        if decorr_time is not None:
+            axes[0].axvline(x=decorr_time, color='orange', linestyle='--', alpha=0.7)
+            axes[0].text(decorr_time + 0.5, 0.5, f'Decorr time: {decorr_time:.1f}h', 
+                        rotation=90, va='center')
+        
+        axes[0].set_xlabel('Lag (hours)')
+        axes[0].set_ylabel('Autocorrelation')
+        axes[0].set_title(f'Cross-Segment Autocorrelation - {value_col}')
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+        axes[0].set_xlim(0, max_lag_hours)
+        
+        # Plot 2: Sample counts per bin
+        axes[1].bar(lag_centers, counts, width=bin_width*0.8, alpha=0.7, 
+                   color='skyblue', edgecolor='black')
+        axes[1].set_xlabel('Lag (hours)')
+        axes[1].set_ylabel('Number of Pairs')
+        axes[1].set_title('Sample Count per Lag Bin')
+        axes[1].grid(True, alpha=0.3)
+        axes[1].set_xlim(0, max_lag_hours)
+        
+        plt.tight_layout()
         plt.show()
         
         # Print summary
-        print(f"\nLaunch Location Summary:")
-        print(f"Number of unique balloons: {len(launch_locations)}")
-        print(f"Latitude range: {launch_locations['latitude'].min():.2f} to {launch_locations['latitude'].max():.2f}")
-        print(f"Longitude range: {launch_locations['longitude'].min():.2f} to {launch_locations['longitude'].max():.2f}")
-        print(f"Launch altitude range: {launch_locations['altitude'].min():.0f}m to {launch_locations['altitude'].max():.0f}m")
-        
-        return launch_locations
-
-
-class SpatialFilter:
-    """Class for spatial filtering to exclude same-segment contributions."""
+        print(f"\nCross-Segment Autocorrelation Summary:")
+        print(f"Total pairs analyzed: {len(pairs_df)}")
+        print(f"Balloons included: {pairs_df['callsign'].nunique()}")
+        print(f"Lag bins with data: {np.sum(counts > 0)}/{len(counts)}")
+        print(f"Decorrelation time: {decorr_time:.1f} hours" if decorr_time else "Decorrelation time: > max lag")
+        print(f"Min segment separation: {min_segment_separation_hours} hours")
     
-    def __init__(self, data: pd.DataFrame, bin_size: float = 5.0):
-        """Initialize with data and spatial bin size."""
-        self.data = data
-        self.bin_size = bin_size
-        self.xedges = np.arange(-180, 185, bin_size)
-        self.yedges = np.arange(-90, 95, bin_size)
-        
-    def filter_same_segment_contributions(self, 
-                                        min_time_separation_hours: float = 6.0) -> pd.DataFrame:
-        """
-        Filter out contributions from the same flight segment.
-        
-        Parameters:
-        -----------
-        min_time_separation_hours : float
-            Minimum time separation between segments
-            
-        Returns:
-        --------
-        pd.DataFrame : Filtered data
-        """
-        min_time_separation = pd.Timedelta(hours=min_time_separation_hours)
-        filtered_data = []
-        
-        for callsign in self.data['balloon_callsign'].unique():
-            balloon_data = self.data[self.data['balloon_callsign'] == callsign].sort_values('dtime')
-            
-            # Identify segments
-            time_gaps = balloon_data['dtime'].diff()
-            segment_breaks = time_gaps > min_time_separation
-            balloon_data['segment_id'] = segment_breaks.cumsum()
-            
-            # Filter by spatial bins within segments
-            for seg_id in balloon_data['segment_id'].unique():
-                seg_data = balloon_data[balloon_data['segment_id'] == seg_id]
-                
-                # Assign spatial bins
-                lon_bins = np.digitize(seg_data['longitude'], self.xedges)
-                lat_bins = np.digitize(seg_data['latitude'], self.yedges)
-                seg_data = seg_data.copy()
-                seg_data['spatial_bin'] = lon_bins * 1000 + lat_bins
-                
-                # Take first occurrence per spatial bin per segment
-                seg_filtered = seg_data.groupby('spatial_bin').first().reset_index()
-                filtered_data.append(seg_filtered)
-        
-        if not filtered_data:
-            raise ValueError("No data available after filtering")
-        
-        return pd.concat(filtered_data, ignore_index=True)
-    
-    def plot_filtered_density(self, filtered_df: pd.DataFrame,
-                             figsize: Tuple[int, int] = (12, 10)) -> None:
-        """
-        Plot filtered observation density.
-        
-        Parameters:
-        -----------
-        filtered_df : pd.DataFrame
-            Filtered data from filter_same_segment_contributions
-        figsize : tuple
-            Figure size
-        """
-        fig = plt.figure(figsize=figsize)
-        ax = fig.add_subplot(111)
-        
-        # Create histogram
-        H, xedges, yedges = np.histogram2d(filtered_df['longitude'], filtered_df['latitude'], 
-                                           bins=[self.xedges, self.yedges])
-        
-        # Plot
-        c = np.where(H.T == 0, np.nan, H.T)
-        cb = ax.imshow(c, origin='lower', aspect='auto', 
-                       extent=[-180, 180, -90, 90], cmap='viridis')
-        plt.colorbar(cb, label='Unique Observation Segments')
-        ax.set_xlabel('Longitude')
-        ax.set_ylabel('Latitude')
-        ax.set_title('Balloon Observations Density - Filtered by Segments\n'
-                     '(One point per spatial bin per continuous flight segment)')
-        ax.grid(True, alpha=0.3)
-        
-        print(f"Original data points: {len(self.data)}")
-        print(f"Filtered data points: {len(filtered_df)}")
-        print(f"Reduction factor: {len(self.data)/len(filtered_df):.1f}x")
-        
-        plt.show()
-
-
-class TemporalAnalyzer:
-    """Class for temporal analysis including autocorrelation functions."""
-    
-    def __init__(self, data: pd.DataFrame):
-        """Initialize with balloon observation data."""
-        self.data = data
-    
-    def autocorrelation_exclude_same_segment(self, time_col: str = 'dtime', 
-                                           value_col: str = 'wind_speed', 
-                                           groupby_col: str = 'balloon_callsign', 
-                                           max_lag_hours: float = 24, 
-                                           min_segment_separation_hours: float = 6, 
-                                           plot: bool = True) -> Optional[Dict]:
-        """
-        Compute autocorrelation excluding contributions from the same flight segment.
-        
-        This prevents artificial correlation from continuous measurements within
-        the same flight period.
-        
-        Parameters:
-        -----------
-        time_col : str
-            Time column name
-        value_col : str  
-            Value column for autocorrelation
-        groupby_col : str
-            Column to group by (e.g., balloon callsign)
-        max_lag_hours : float
-            Maximum lag in hours
-        min_segment_separation_hours : float
-            Minimum hours between segments to be considered independent
-        plot : bool
-            Whether to create plots
-            
-        Returns:
-        --------
-        dict : Autocorrelation results excluding same-segment contributions
-        """
-        
-        try:
-            from scipy.signal import correlate
-        except ImportError:
-            print("scipy not available. Computing basic correlation only.")
-        
-        df = self.data
-        if value_col not in df.columns:
-            print(f"Warning: '{value_col}' column not found")
-            return None
-        
-        all_pairs = []
-        
-        # Process each balloon separately
-        for callsign in df[groupby_col].unique():
-            balloon_data = df[df[groupby_col] == callsign].copy()
-            balloon_data = balloon_data.sort_values(time_col).dropna(subset=[value_col, time_col])
-            
-            if len(balloon_data) < 2:
-                continue
-                
-            # Convert time to datetime if needed
-            if not pd.api.types.is_datetime64_any_dtype(balloon_data[time_col]):
-                balloon_data[time_col] = pd.to_datetime(balloon_data[time_col])
-            
-            # Identify segments based on time gaps
-            time_gaps = balloon_data[time_col].diff()
-            segment_breaks = time_gaps > pd.Timedelta(hours=min_segment_separation_hours)
-            balloon_data['segment_id'] = segment_breaks.cumsum()
-            
-            # Create all pairs excluding same-segment pairs
-            for i in range(len(balloon_data)):
-                for j in range(i+1, len(balloon_data)):
-                    # Skip if same segment
-                    if balloon_data.iloc[i]['segment_id'] == balloon_data.iloc[j]['segment_id']:
-                        continue
-                    
-                    time_diff = (balloon_data.iloc[j][time_col] - balloon_data.iloc[i][time_col]).total_seconds() / 3600
-                    
-                    # Only include pairs within max lag
-                    if time_diff <= max_lag_hours:
-                        value_product = balloon_data.iloc[i][value_col] * balloon_data.iloc[j][value_col]
-                        all_pairs.append({
-                            'lag_hours': time_diff,
-                            'value_product': value_product,
-                            'value1': balloon_data.iloc[i][value_col],
-                            'value2': balloon_data.iloc[j][value_col],
-                            'callsign': callsign
-                        })
-        
-        if not all_pairs:
-            print("No valid cross-segment pairs found")
-            return None
-        
-        pairs_df = pd.DataFrame(all_pairs)
-        
-        # Bin the lag times
-        bin_width = 1.0  # 1 hour bins
-        lag_bins = np.arange(0, max_lag_hours + bin_width, bin_width)
-        lag_centers = 0.5 * (lag_bins[:-1] + lag_bins[1:])
-        
-        # Compute autocorrelation for each bin
-        autocorr = []
-        counts = []
-        
-        # Calculate overall variance for normalization
-        all_values = np.concatenate([pairs_df['value1'].values, pairs_df['value2'].values])
-        mean_val = np.mean(all_values)
-        var_val = np.var(all_values)
-        
-        for i, lag_center in enumerate(lag_centers):
-            # Find pairs in this lag bin
-            in_bin = ((pairs_df['lag_hours'] >= lag_bins[i]) & 
-                      (pairs_df['lag_hours'] < lag_bins[i+1]))
-            
-            if in_bin.sum() > 0:
-                # Mean of products minus product of means
-                bin_pairs = pairs_df[in_bin]
-                mean_product = bin_pairs['value_product'].mean()
-                
-                # Normalize by variance
-                autocorr_val = (mean_product - mean_val**2) / var_val
-                autocorr.append(autocorr_val)
-                counts.append(len(bin_pairs))
-            else:
-                autocorr.append(np.nan)
-                counts.append(0)
-        
-        autocorr = np.array(autocorr)
-        counts = np.array(counts)
-        
-        # Find decorrelation time
-        decorr_threshold = 1/np.e * autocorr[0] if not np.isnan(autocorr[0]) else 1/np.e
-        valid_autocorr = autocorr[~np.isnan(autocorr)]
-        valid_lags = lag_centers[~np.isnan(autocorr)]
-        
-        if len(valid_autocorr) > 1:
-            decorr_idx = np.where(valid_autocorr < decorr_threshold)[0]
-            decorr_time = valid_lags[decorr_idx[0]] if len(decorr_idx) > 0 else None
-        else:
-            decorr_time = None
-        
-        if plot:
-            fig, axes = plt.subplots(2, 1, figsize=(12, 10))
-            
-            # Plot 1: Autocorrelation function
-            valid_mask = ~np.isnan(autocorr)
-            axes[0].plot(lag_centers[valid_mask], autocorr[valid_mask], 'ro-', 
-                        linewidth=2, markersize=6, label='Cross-segment autocorr')
-            axes[0].axhline(y=decorr_threshold, color='orange', linestyle='--', 
-                           label=f'1/e threshold ({decorr_threshold:.3f})')
-            
-            if decorr_time is not None:
-                axes[0].axvline(x=decorr_time, color='orange', linestyle='--', alpha=0.7)
-                axes[0].text(decorr_time + 0.5, 0.5, f'Decorr time: {decorr_time:.1f}h', 
-                            rotation=90, va='center')
-            
-            axes[0].set_xlabel('Lag (hours)')
-            axes[0].set_ylabel('Autocorrelation')
-            axes[0].set_title(f'Cross-Segment Autocorrelation - {value_col}')
-            axes[0].legend()
-            axes[0].grid(True, alpha=0.3)
-            axes[0].set_xlim(0, max_lag_hours)
-            
-            # Plot 2: Sample counts per bin
-            axes[1].bar(lag_centers, counts, width=bin_width*0.8, alpha=0.7, 
-                       color='skyblue', edgecolor='black')
-            axes[1].set_xlabel('Lag (hours)')
-            axes[1].set_ylabel('Number of Pairs')
-            axes[1].set_title('Sample Count per Lag Bin')
-            axes[1].grid(True, alpha=0.3)
-            axes[1].set_xlim(0, max_lag_hours)
-            
-            plt.tight_layout()
-            plt.show()
-            
-            # Print summary
-            print(f"\nCross-Segment Autocorrelation Summary:")
-            print(f"Total pairs analyzed: {len(pairs_df)}")
-            print(f"Balloons included: {pairs_df['callsign'].nunique()}")
-            print(f"Lag bins with data: {np.sum(counts > 0)}/{len(counts)}")
-            print(f"Decorrelation time: {decorr_time:.1f} hours" if decorr_time else "Decorrelation time: > max lag")
-            print(f"Min segment separation: {min_segment_separation_hours} hours")
-        
-        return {
-            'lag_centers': lag_centers,
-            'autocorr': autocorr,
-            'counts': counts,
-            'decorr_time': decorr_time,
-            'n_pairs': len(pairs_df),
-            'n_balloons': pairs_df['callsign'].nunique(),
-            'min_segment_separation_hours': min_segment_separation_hours
-        }
+    return {
+        'lag_centers': lag_centers,
+        'autocorr': autocorr,
+        'counts': counts,
+        'decorr_time': decorr_time,
+        'n_pairs': len(pairs_df),
+        'n_balloons': pairs_df['callsign'].nunique(),
+        'min_segment_separation_hours': min_segment_separation_hours
+    }
 
 
 # In[ ]:
@@ -871,7 +995,7 @@ dftest = dfobs[dfobs.balloon_callsign==cs]
 plt.plot(dftest.dtime,dftest.altitude,'--k.')
 
 
-# In[19]:
+# In[9]:
 
 
 # plot a map of launch locations (first latitude longitude point) of all the balloons using Cartopy
@@ -934,6 +1058,7 @@ plt.title(f'Launch Locations of All Balloons (n={len(launch_locations)})',
 #cbar.set_ticks(range(0, len(launch_locations), max(1, len(launch_locations)//10)))
 
 plt.tight_layout()
+plt.savefig('launch_locations_map.png', dpi=300)
 plt.show()
 
 # Print summary of launch locations
@@ -944,11 +1069,10 @@ print(f"Longitude range: {launch_locations['longitude'].min():.2f} to {launch_lo
 print(f"Launch altitude range: {launch_locations['altitude'].min():.0f}m to {launch_locations['altitude'].max():.0f}m")
 
 
-# Add temporal analysis method to TemporalAnalyzer class
-def add_temporal_methods():
-    """Helper function to add temporal analysis methods to TemporalAnalyzer class."""
-    
-    def temporal_autocorrelation_wind_speed(self, callsign=None, max_lag_hours=24, plot=True):
+# In[20]:
+
+
+def temporal_autocorrelation_wind_speed(df, callsign=None, max_lag_hours=24, plot=True):
     """
     Calculate temporal autocorrelation of wind speed for balloon observations.
     
@@ -1566,4 +1690,655 @@ else:
     result_syn = combine_autocorrelations(
         synthetic_df, method='ensemble_average', max_lag_hours=48, plot=True
     )
+
+
+# In[9]:
+
+
+def add_distance_traveled(df, lat_col='latitude', lon_col='longitude', 
+                         time_col='time', groupby_col='balloon_callsign'):
+    """
+    Add columns to the dataframe with distance traveled, time elapsed, and average wind speed
+    calculated between consecutive observations.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame containing balloon observations
+    lat_col : str, default='latitude'
+        Column name for latitude in degrees
+    lon_col : str, default='longitude' 
+        Column name for longitude in degrees
+    time_col : str, default='time'
+        Column name for time (used for sorting)
+    groupby_col : str, default='balloon_callsign'
+        Column to group by (each balloon tracked separately)
+        
+    Returns:
+    --------
+    pandas.DataFrame
+        Original dataframe with added columns:
+        - 'distance_traveled_m': Distance in meters since previous observation
+        - 'dt_seconds': Time elapsed in seconds since previous observation  
+        - 'average_wind_speed_ms': Average wind speed in m/s between observations
+        
+    Notes:
+    ------
+    Uses the haversine formula to calculate great circle distances between
+    consecutive GPS coordinates. The first observation for each balloon
+    will have distance_traveled_m = 0.0, dt_seconds = 0.0, and 
+    average_wind_speed_ms = 0.0 since there's no previous point.
+    """
+    
+    def haversine_distance(lat1, lon1, lat2, lon2):
+        """
+        Calculate the great circle distance between two points 
+        on the earth (specified in decimal degrees) using the haversine formula.
+        
+        Returns distance in meters.
+        """
+        # Convert decimal degrees to radians
+        lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+        
+        # Haversine formula
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+        c = 2 * np.arcsin(np.sqrt(a))
+        
+        # Radius of earth in meters
+        R = 6371000  # meters
+        
+        return R * c
+    
+    # Make a copy to avoid modifying the original dataframe
+    df_result = df.copy()
+    
+    # Initialize the new columns
+    df_result['distance_traveled_m'] = 0.0
+    df_result['dt_seconds'] = 0.0
+    df_result['average_wind_speed_ms'] = 0.0
+    
+    # Convert time column to datetime if it's not already
+    if time_col in df_result.columns and not pd.api.types.is_datetime64_any_dtype(df_result[time_col]):
+        df_result[time_col] = pd.to_datetime(df_result[time_col])
+    
+    # Process each balloon separately
+    for callsign in df_result[groupby_col].unique():
+        # Get data for this balloon, sorted by time
+        mask = df_result[groupby_col] == callsign
+        balloon_data = df_result[mask].copy()
+        
+        # Ensure data is sorted by time
+        if time_col in balloon_data.columns:
+            balloon_data = balloon_data.sort_values(time_col)
+        
+        # Calculate distances, time differences, and wind speeds between consecutive points
+        if len(balloon_data) > 1:
+            distances = []
+            dt_values = []
+            wind_speeds = []
+            
+            # First point has no previous point
+            distances.append(0.0)
+            dt_values.append(0.0)
+            wind_speeds.append(0.0)
+            
+            for i in range(1, len(balloon_data)):
+                lat1 = balloon_data.iloc[i-1][lat_col]
+                lon1 = balloon_data.iloc[i-1][lon_col]
+                lat2 = balloon_data.iloc[i][lat_col]
+                lon2 = balloon_data.iloc[i][lon_col]
+                
+                # Calculate time difference in seconds
+                if time_col in balloon_data.columns:
+                    time1 = balloon_data.iloc[i-1][time_col]
+                    time2 = balloon_data.iloc[i][time_col]
+                    dt_sec = (time2 - time1).total_seconds()
+                else:
+                    dt_sec = np.nan
+                
+                # Handle missing coordinates or time
+                if (pd.isna(lat1) or pd.isna(lon1) or pd.isna(lat2) or pd.isna(lon2) or 
+                    pd.isna(dt_sec) or dt_sec <= 0):
+                    distances.append(np.nan)
+                    dt_values.append(np.nan)
+                    wind_speeds.append(np.nan)
+                else:
+                    dist = haversine_distance(lat1, lon1, lat2, lon2)
+                    distances.append(dist)
+                    dt_values.append(dt_sec)
+                    
+                    # Calculate average wind speed (m/s)
+                    wind_speed = dist / dt_sec if dt_sec > 0 else 0.0
+                    wind_speeds.append(wind_speed)
+            
+            # Update the result dataframe for this balloon
+            df_result.loc[balloon_data.index, 'distance_traveled_m'] = distances
+            df_result.loc[balloon_data.index, 'dt_seconds'] = dt_values
+            df_result.loc[balloon_data.index, 'average_wind_speed_ms'] = wind_speeds
+    
+    return df_result
+
+
+# Example usage and validation
+print("=== ADDING DISTANCE, TIME, AND WIND SPEED COLUMNS ===")
+
+# Add distance traveled, time elapsed, and average wind speed columns to the observations dataframe
+dfobs_enhanced = add_distance_traveled(dfobs)
+
+# Display summary statistics
+print(f"\nEnhanced dataframe statistics:")
+print(f"Total observations: {len(dfobs_enhanced)}")
+
+# Distance statistics
+valid_dist = ~dfobs_enhanced['distance_traveled_m'].isna()
+print(f"\nDistance traveled statistics:")
+print(f"Observations with distance data: {valid_dist.sum()}")
+print(f"Distance range: {dfobs_enhanced['distance_traveled_m'].min():.1f} - {dfobs_enhanced['distance_traveled_m'].max():.1f} meters")
+print(f"Mean distance between observations: {dfobs_enhanced['distance_traveled_m'].mean():.1f} meters")
+print(f"Median distance between observations: {dfobs_enhanced['distance_traveled_m'].median():.1f} meters")
+
+# Time elapsed statistics  
+valid_dt = ~dfobs_enhanced['dt_seconds'].isna()
+print(f"\nTime elapsed statistics:")
+print(f"Observations with time data: {valid_dt.sum()}")
+if valid_dt.sum() > 0:
+    print(f"Time range: {dfobs_enhanced['dt_seconds'].min():.1f} - {dfobs_enhanced['dt_seconds'].max():.1f} seconds")
+    print(f"Mean time between observations: {dfobs_enhanced['dt_seconds'].mean():.1f} seconds ({dfobs_enhanced['dt_seconds'].mean()/60:.1f} minutes)")
+    print(f"Median time between observations: {dfobs_enhanced['dt_seconds'].median():.1f} seconds ({dfobs_enhanced['dt_seconds'].median()/60:.1f} minutes)")
+
+# Wind speed statistics
+valid_ws = (~dfobs_enhanced['average_wind_speed_ms'].isna()) & (dfobs_enhanced['average_wind_speed_ms'] > 0)
+print(f"\nAverage wind speed statistics:")
+print(f"Observations with wind speed data: {valid_ws.sum()}")
+if valid_ws.sum() > 0:
+    print(f"Wind speed range: {dfobs_enhanced['average_wind_speed_ms'].min():.2f} - {dfobs_enhanced['average_wind_speed_ms'].max():.2f} m/s")
+    print(f"Mean wind speed: {dfobs_enhanced['average_wind_speed_ms'].mean():.2f} m/s")
+    print(f"Median wind speed: {dfobs_enhanced['average_wind_speed_ms'].median():.2f} m/s")
+
+# Show sample of data with new columns
+print(f"\nSample data with new columns:")
+sample_cols = ['balloon_callsign', 'time', 'latitude', 'longitude', 
+               'distance_traveled_m', 'dt_seconds', 'average_wind_speed_ms', 'wind_speed']
+available_cols = [col for col in sample_cols if col in dfobs_enhanced.columns]
+print(dfobs_enhanced[available_cols].head(10))
+
+
+# In[ ]:
+
+
+def find_anomalous_observations(df, 
+                               wind_speed_col='wind_speed',
+                               avg_wind_speed_col='average_wind_speed_ms',
+                               distance_col='distance_traveled_m',
+                               wind_speed_diff_threshold=None,
+                               wind_speed_ratio_threshold=None,
+                               max_distance_threshold=None,
+                               max_avg_wind_speed_threshold=None,
+                               groupby_col='balloon_callsign'):
+    """
+    Find anomalous balloon observations based on various criteria.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame with balloon observations including wind speed and distance data
+    wind_speed_col : str, default='wind_speed'
+        Column name for observed wind speed
+    avg_wind_speed_col : str, default='average_wind_speed_ms'
+        Column name for calculated average wind speed from GPS tracking
+    distance_col : str, default='distance_traveled_m'
+        Column name for distance traveled between observations
+    wind_speed_diff_threshold : float, optional
+        Threshold for absolute difference between observed and average wind speeds (m/s)
+    wind_speed_ratio_threshold : float, optional
+        Threshold for ratio between average and observed wind speeds (e.g., 2.0 means 2x different)
+    max_distance_threshold : float, optional
+        Maximum allowed distance traveled between observations (meters)
+    max_avg_wind_speed_threshold : float, optional
+        Maximum allowed average wind speed (m/s)
+    groupby_col : str, default='balloon_callsign'
+        Column to group by for balloon identification
+        
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame containing only the anomalous observations with additional columns:
+        - 'anomaly_reasons': List of reasons why this observation is flagged
+        - 'wind_speed_diff': Absolute difference between observed and average wind speeds
+        - 'wind_speed_ratio': Ratio of average to observed wind speed
+    """
+    
+    # Create a copy of the dataframe
+    df_analysis = df.copy()
+    
+    # Initialize anomaly tracking columns
+    df_analysis['anomaly_reasons'] = [[] for _ in range(len(df_analysis))]
+    df_analysis['wind_speed_diff'] = np.nan
+    df_analysis['wind_speed_ratio'] = np.nan
+    
+    # Calculate wind speed differences and ratios where both values exist
+    if wind_speed_col in df_analysis.columns and avg_wind_speed_col in df_analysis.columns:
+        valid_mask = (~df_analysis[wind_speed_col].isna() & 
+                     ~df_analysis[avg_wind_speed_col].isna() &
+                     (df_analysis[wind_speed_col] > 0) &
+                     (df_analysis[avg_wind_speed_col] > 0))
+        
+        df_analysis.loc[valid_mask, 'wind_speed_diff'] = abs(
+            df_analysis.loc[valid_mask, avg_wind_speed_col] - 
+            df_analysis.loc[valid_mask, wind_speed_col]
+        )
+        
+        df_analysis.loc[valid_mask, 'wind_speed_ratio'] = (
+            df_analysis.loc[valid_mask, avg_wind_speed_col] / 
+            df_analysis.loc[valid_mask, wind_speed_col]
+        )
+    
+    # Find anomalies based on wind speed difference threshold
+    if wind_speed_diff_threshold is not None and wind_speed_col in df_analysis.columns:
+        mask = df_analysis['wind_speed_diff'] > wind_speed_diff_threshold
+        for idx in df_analysis[mask].index:
+            df_analysis.at[idx, 'anomaly_reasons'].append(
+                f'Wind speed difference > {wind_speed_diff_threshold} m/s'
+            )
+    
+    # Find anomalies based on wind speed ratio threshold
+    if wind_speed_ratio_threshold is not None and wind_speed_col in df_analysis.columns:
+        mask = ((df_analysis['wind_speed_ratio'] > wind_speed_ratio_threshold) | 
+                (df_analysis['wind_speed_ratio'] < (1.0 / wind_speed_ratio_threshold)))
+        for idx in df_analysis[mask].index:
+            ratio = df_analysis.at[idx, 'wind_speed_ratio']
+            if not pd.isna(ratio):
+                df_analysis.at[idx, 'anomaly_reasons'].append(
+                    f'Wind speed ratio > {wind_speed_ratio_threshold}x different (ratio: {ratio:.2f})'
+                )
+    
+    # Find anomalies based on distance threshold
+    if max_distance_threshold is not None and distance_col in df_analysis.columns:
+        mask = df_analysis[distance_col] > max_distance_threshold
+        for idx in df_analysis[mask].index:
+            distance = df_analysis.at[idx, distance_col]
+            if not pd.isna(distance):
+                df_analysis.at[idx, 'anomaly_reasons'].append(
+                    f'Distance traveled > {max_distance_threshold/1000:.1f} km ({distance/1000:.1f} km)'
+                )
+    
+    # Find anomalies based on average wind speed threshold
+    if max_avg_wind_speed_threshold is not None and avg_wind_speed_col in df_analysis.columns:
+        mask = df_analysis[avg_wind_speed_col] > max_avg_wind_speed_threshold
+        for idx in df_analysis[mask].index:
+            wind_speed = df_analysis.at[idx, avg_wind_speed_col]
+            if not pd.isna(wind_speed):
+                df_analysis.at[idx, 'anomaly_reasons'].append(
+                    f'Average wind speed > {max_avg_wind_speed_threshold} m/s ({wind_speed:.2f} m/s)'
+                )
+    
+    # Filter to only anomalous observations (those with at least one reason)
+    anomaly_mask = df_analysis['anomaly_reasons'].apply(len) > 0
+    anomalous_df = df_analysis[anomaly_mask].copy()
+    
+    # Convert anomaly_reasons list to string for better display
+    anomalous_df['anomaly_reasons_str'] = anomalous_df['anomaly_reasons'].apply(
+        lambda x: '; '.join(x) if len(x) > 0 else ''
+    )
+    
+    return anomalous_df
+
+
+# Example usage and testing
+print("=== FINDING ANOMALOUS OBSERVATIONS ===")
+
+# Define some reasonable thresholds for balloon data
+# These can be adjusted based on your specific requirements
+thresholds = {
+    'wind_speed_diff_threshold': 1000000.0,      # 10 m/s difference between observed and GPS-derived wind speed
+    'wind_speed_ratio_threshold': 100.0,       # 3x difference in wind speeds
+    'max_distance_threshold': 5000000000,         # 50 km maximum distance between observations
+    'max_avg_wind_speed_threshold': 150.0     # 50 m/s maximum average wind speed
+}
+
+print(f"Using thresholds:")
+for key, value in thresholds.items():
+    if 'distance' in key:
+        print(f"  {key}: {value/1000:.1f} km")
+    else:
+        print(f"  {key}: {value}")
+
+# Find anomalous observations
+anomalous_obs = find_anomalous_observations(dfobs_enhanced, **thresholds)
+
+print(f"\n=== ANOMALY DETECTION RESULTS ===")
+print(f"Total observations: {len(dfobs_enhanced)}")
+print(f"Anomalous observations found: {len(anomalous_obs)}")
+print(f"Percentage anomalous: {len(anomalous_obs)/len(dfobs_enhanced)*100:.2f}%")
+
+if len(anomalous_obs) > 0:
+    # Group by balloon callsign
+    print(f"\nAnomalies by balloon:")
+    anomaly_counts = anomalous_obs['balloon_callsign'].value_counts()
+    for callsign, count in anomaly_counts.items():
+        print(f"  {callsign}: {count} anomalous observations")
+    
+    # Show statistics of anomalous values
+    print(f"\nAnomaly statistics:")
+    if 'wind_speed_diff' in anomalous_obs.columns:
+        valid_diff = ~anomalous_obs['wind_speed_diff'].isna()
+        if valid_diff.sum() > 0:
+            print(f"  Wind speed differences: {anomalous_obs.loc[valid_diff, 'wind_speed_diff'].min():.2f} - {anomalous_obs.loc[valid_diff, 'wind_speed_diff'].max():.2f} m/s")
+            print(f'number {len(valid_diff.values)}')
+    if 'distance_traveled_m' in anomalous_obs.columns:
+        valid_dist = ~anomalous_obs['distance_traveled_m'].isna()
+        if valid_dist.sum() > 0:
+            print(f"  Distances: {anomalous_obs.loc[valid_dist, 'distance_traveled_m'].min()/1000:.1f} - {anomalous_obs.loc[valid_dist, 'distance_traveled_m'].max()/1000:.1f} km")
+            print(f'number {len(valid_dist.values)}')
+    
+    if 'average_wind_speed_ms' in anomalous_obs.columns:
+        valid_ws = ~anomalous_obs['average_wind_speed_ms'].isna()
+        if valid_ws.sum() > 0:
+            print(f"  Average wind speeds: {anomalous_obs.loc[valid_ws, 'average_wind_speed_ms'].min():.2f} - {anomalous_obs.loc[valid_ws, 'average_wind_speed_ms'].max():.2f} m/s")
+            print(f'number {len(valid_ws.values)}')
+    
+    # Show sample anomalous observations
+    print(f"\nSample anomalous observations:")
+    display_cols = ['balloon_callsign', 'time', 'wind_speed', 'average_wind_speed_ms', 
+                   'distance_traveled_m', 'wind_speed_diff', 'wind_speed_ratio', 'anomaly_reasons_str']
+    available_display_cols = [col for col in display_cols if col in anomalous_obs.columns]
+    print(anomalous_obs[available_display_cols].head(10).to_string())
+else:
+    print("\nNo anomalous observations found with the current thresholds.")
+    print("You may want to adjust the thresholds to be more sensitive.")
+
+
+# In[27]:
+
+
+anomalous_obs
+
+
+# In[43]:
+
+
+c = anomalous_obs[anomalous_obs.average_wind_speed_ms > 150]
+a = list(c.balloon_callsign.unique())
+#print(len(c))
+#a = list(anomalous_obs.balloon_callsign.unique())
+print(len(a))
+for aaa in a[0:15]:
+    fig = plt.figure()
+    ax = fig.add_subplot(2,2,1)
+    ax2 = fig.add_subplot(2,2,2)
+    ax3 = fig.add_subplot(2,2,3)
+    ax4 = fig.add_subplot(2,2,4)
+    ax5 = ax4.twinx()
+    print(aaa)
+    new2 = anomalous_obs[anomalous_obs.balloon_callsign==aaa]
+    new = dfobs[dfobs.balloon_callsign==aaa]
+    new = readObs.process_obs_df(new)
+    new3 = dfobs_enhanced[dfobs_enhanced.balloon_callsign==aaa]
+    # print(new.columns)
+    ax.plot(new.dtime.values, new.latitude.values, '--k.')
+    ax.plot(new2.time.values, new2.latitude.values, 'r.')
+    ax2.plot(new.dtime.values, new.longitude.values, '--k.')
+    ax2.plot(new2.time.values, new2.longitude.values, 'r.')
+    ax3.scatter(new.longitude.values, new.latitude.values, c=new.dtime.values, s=5 )
+    ax3.plot(new.longitude.values, new.latitude.values, '--k',alpha=0.5)
+    ax3.plot(new2.longitude.values, new2.latitude.values, 'r.')
+
+    ax4.plot(new3.time, new3.average_wind_speed_ms, ':k.', label='wind speed m/s')
+    ax5.plot(new3.time, new3.distance_traveled_m/1000/111, '--b*', label='distance degrees')
+    ax4.legend()
+    plt.show()
+
+
+# In[10]:
+
+
+def analyze_wind_distance_distributions(df, 
+                                       wind_speed_col='wind_speed',
+                                       avg_wind_speed_col='average_wind_speed_ms',
+                                       distance_col='distance_traveled_m',
+                                       groupby_col='balloon_callsign',
+                                       plot=True,
+                                       figsize=(15, 10)):
+    """
+    Analyze and visualize the distributions of wind speeds and distance traveled.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame with balloon observations
+    wind_speed_col : str, default='wind_speed'
+        Column name for observed wind speed
+    avg_wind_speed_col : str, default='average_wind_speed_ms'
+        Column name for calculated average wind speed from GPS tracking
+    distance_col : str, default='distance_traveled_m'
+        Column name for distance traveled between observations
+    groupby_col : str, default='balloon_callsign'
+        Column to group by for balloon identification
+    plot : bool, default=True
+        Whether to create visualizations
+    figsize : tuple, default=(15, 10)
+        Figure size for plots
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing distribution statistics for each variable
+    """
+    
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from scipy import stats
+    
+    # Initialize results dictionary
+    results = {}
+    
+    print("=== WIND SPEED AND DISTANCE DISTRIBUTION ANALYSIS ===\n")
+    
+    # Analyze each variable
+    variables = {
+        'observed_wind_speed': wind_speed_col,
+        'average_wind_speed': avg_wind_speed_col,
+        'distance_traveled': distance_col
+    }
+    
+    for var_name, col_name in variables.items():
+        if col_name not in df.columns:
+            print(f"Warning: Column '{col_name}' not found in dataframe. Skipping {var_name}.")
+            continue
+            
+        print(f"=== {var_name.upper().replace('_', ' ')} DISTRIBUTION ===")
+        
+        # Get valid (non-null, positive) data
+        if var_name == 'distance_traveled':
+            # For distance, include zero values but exclude negative
+            valid_data = df[col_name][(~df[col_name].isna()) & (df[col_name] >= 0)]
+        else:
+            # For wind speeds, exclude zero and negative values
+            valid_data = df[col_name][(~df[col_name].isna()) & (df[col_name] > 0)]
+        
+        if len(valid_data) == 0:
+            print(f"No valid data found for {var_name}")
+            continue
+            
+        # Basic statistics
+        stats_dict = {
+            'count': len(valid_data),
+            'mean': valid_data.mean(),
+            'median': valid_data.median(),
+            'std': valid_data.std(),
+            'min': valid_data.min(),
+            'max': valid_data.max(),
+            'q25': valid_data.quantile(0.25),
+            'q75': valid_data.quantile(0.75),
+            'skewness': stats.skew(valid_data),
+            'kurtosis': stats.kurtosis(valid_data)
+        }
+        
+        results[var_name] = stats_dict
+        
+        # Print statistics
+        units = 'm/s' if 'wind_speed' in var_name else 'meters'
+        scale_factor = 1 if 'wind_speed' in var_name else 1000  # Convert distance to km for display
+        display_units = units if 'wind_speed' in var_name else 'km'
+        
+        print(f"Count: {stats_dict['count']:,}")
+        print(f"Mean: {stats_dict['mean']/scale_factor:.2f} {display_units}")
+        print(f"Median: {stats_dict['median']/scale_factor:.2f} {display_units}")
+        print(f"Std Dev: {stats_dict['std']/scale_factor:.2f} {display_units}")
+        print(f"Range: {stats_dict['min']/scale_factor:.2f} - {stats_dict['max']/scale_factor:.2f} {display_units}")
+        print(f"IQR: {stats_dict['q25']/scale_factor:.2f} - {stats_dict['q75']/scale_factor:.2f} {display_units}")
+        print(f"Skewness: {stats_dict['skewness']:.3f}")
+        print(f"Kurtosis: {stats_dict['kurtosis']:.3f}")
+        
+        # Normality test (Shapiro-Wilk for smaller samples, Anderson-Darling for larger)
+        if len(valid_data) <= 5000:
+            stat, p_val = stats.shapiro(valid_data)
+            test_name = "Shapiro-Wilk"
+        else:
+            # Use a random sample for large datasets
+            sample_data = valid_data.sample(n=5000, random_state=42)
+            stat, p_val = stats.shapiro(sample_data)
+            test_name = "Shapiro-Wilk (sample)"
+            
+        print(f"{test_name} normality test: statistic={stat:.4f}, p-value={p_val:.2e}")
+        is_normal = p_val > 0.05
+        print(f"Distribution appears {'normal' if is_normal else 'non-normal'} (α=0.05)")
+        
+        print()
+    
+    # Create visualizations if requested
+    if plot and len(results) > 0:
+        # Determine subplot configuration
+        n_vars = len(results)
+        if n_vars == 1:
+            fig, axes = plt.subplots(2, 1, figsize=(8, 10))
+        elif n_vars == 2:
+            fig, axes = plt.subplots(2, 2, figsize=figsize)
+        else:
+            fig, axes = plt.subplots(3, 2, figsize=figsize)
+        
+        axes = axes.flatten() if n_vars > 1 else [axes[0], axes[1]]
+        
+        for i, (var_name, col_name) in enumerate(variables.items()):
+            if col_name not in df.columns or var_name not in results:
+                continue
+                
+            # Get valid data
+            if var_name == 'distance_traveled':
+                valid_data = df[col_name][(~df[col_name].isna()) & (df[col_name] >= 0)]
+                plot_data = valid_data / 1000  # Convert to km for plotting
+                units = 'km'
+            else:
+                valid_data = df[col_name][(~df[col_name].isna()) & (df[col_name] > 0)]
+                plot_data = valid_data
+                units = 'm/s'
+            
+            # Histogram with KDE
+            axes[i*2].hist(plot_data, bins=50, alpha=0.7, density=True, color='skyblue', edgecolor='black')
+            
+            # Add KDE curve
+            try:
+                kde_data = stats.gaussian_kde(plot_data)
+                x_range = np.linspace(plot_data.min(), plot_data.max(), 200)
+                axes[i*2].plot(x_range, kde_data(x_range), 'r-', linewidth=2, label='KDE')
+            except:
+                pass
+                
+            axes[i*2].axvline(plot_data.mean(), color='red', linestyle='--', alpha=0.8, label=f'Mean: {plot_data.mean():.2f}')
+            axes[i*2].axvline(plot_data.median(), color='green', linestyle='--', alpha=0.8, label=f'Median: {plot_data.median():.2f}')
+            axes[i*2].set_xlabel(f'{var_name.replace("_", " ").title()} ({units})')
+            axes[i*2].set_ylabel('Density')
+            axes[i*2].set_title(f'{var_name.replace("_", " ").title()} Distribution')
+            axes[i*2].legend()
+            axes[i*2].grid(True, alpha=0.3)
+            
+            # Q-Q plot for normality assessment
+            stats.probplot(plot_data, dist="norm", plot=axes[i*2+1])
+            axes[i*2+1].set_title(f'{var_name.replace("_", " ").title()} Q-Q Plot (Normal)')
+            axes[i*2+1].grid(True, alpha=0.3)
+        
+        # Remove unused subplots
+        for j in range(len(results)*2, len(axes)):
+            fig.delaxes(axes[j])
+            
+        plt.tight_layout()
+        plt.show()
+        
+        # Additional comparison plot if we have both wind speed measurements
+        if (wind_speed_col in df.columns and avg_wind_speed_col in df.columns and 
+            'observed_wind_speed' in results and 'average_wind_speed' in results):
+            
+            # Scatter plot comparison
+            plt.figure(figsize=(10, 8))
+            
+            # Get data for both wind speed measurements
+            valid_mask = (~df[wind_speed_col].isna() & ~df[avg_wind_speed_col].isna() & 
+                         (df[wind_speed_col] > 0) & (df[avg_wind_speed_col] > 0))
+            
+            if valid_mask.sum() > 0:
+                obs_ws = df.loc[valid_mask, wind_speed_col]
+                avg_ws = df.loc[valid_mask, avg_wind_speed_col]
+                
+                plt.subplot(2, 2, 1)
+                plt.scatter(obs_ws, avg_ws, alpha=0.6, s=20)
+                plt.plot([0, max(obs_ws.max(), avg_ws.max())], [0, max(obs_ws.max(), avg_ws.max())], 
+                        'r--', label='1:1 line')
+                plt.xlabel('Observed Wind Speed (m/s)')
+                plt.ylabel('GPS-derived Average Wind Speed (m/s)')
+                plt.title('Wind Speed Comparison')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                # Difference vs mean (Bland-Altman style)
+                plt.subplot(2, 2, 2)
+                mean_ws = (obs_ws + avg_ws) / 2
+                diff_ws = avg_ws - obs_ws
+                plt.scatter(mean_ws, diff_ws, alpha=0.6, s=20)
+                plt.axhline(diff_ws.mean(), color='red', linestyle='-', label=f'Mean diff: {diff_ws.mean():.2f}')
+                plt.axhline(diff_ws.mean() + 1.96*diff_ws.std(), color='red', linestyle='--', alpha=0.7, 
+                           label=f'±1.96σ: {diff_ws.mean() + 1.96*diff_ws.std():.2f}')
+                plt.axhline(diff_ws.mean() - 1.96*diff_ws.std(), color='red', linestyle='--', alpha=0.7,
+                           label=f'±1.96σ: {diff_ws.mean() - 1.96*diff_ws.std():.2f}')
+                plt.xlabel('Mean Wind Speed (m/s)')
+                plt.ylabel('Difference (GPS - Observed) (m/s)')
+                plt.title('Wind Speed Difference vs Mean')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                # Distribution of differences
+                plt.subplot(2, 2, 3)
+                plt.hist(diff_ws, bins=50, alpha=0.7, density=True, color='lightcoral')
+                plt.axvline(diff_ws.mean(), color='red', linestyle='--', label=f'Mean: {diff_ws.mean():.2f}')
+                plt.axvline(0, color='black', linestyle='-', alpha=0.5, label='Perfect agreement')
+                plt.xlabel('Wind Speed Difference (GPS - Observed) (m/s)')
+                plt.ylabel('Density')
+                plt.title('Distribution of Wind Speed Differences')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                # Correlation analysis
+                correlation = obs_ws.corr(avg_ws)
+                plt.subplot(2, 2, 4)
+                plt.text(0.1, 0.8, f'Pearson Correlation: {correlation:.3f}', transform=plt.gca().transAxes, fontsize=12)
+                plt.text(0.1, 0.7, f'RMSE: {np.sqrt(((avg_ws - obs_ws)**2).mean()):.3f} m/s', transform=plt.gca().transAxes, fontsize=12)
+                plt.text(0.1, 0.6, f'Mean Absolute Error: {abs(avg_ws - obs_ws).mean():.3f} m/s', transform=plt.gca().transAxes, fontsize=12)
+                plt.text(0.1, 0.5, f'Bias (GPS - Obs): {diff_ws.mean():.3f} m/s', transform=plt.gca().transAxes, fontsize=12)
+                plt.text(0.1, 0.4, f'N observations: {len(obs_ws):,}', transform=plt.gca().transAxes, fontsize=12)
+                plt.title('Wind Speed Comparison Statistics')
+                plt.axis('off')
+                
+                plt.tight_layout()
+                plt.show()
+    
+    return results
+
+
+# Example usage
+print("Analyzing distributions of wind speeds and distance traveled...")
+distribution_results = analyze_wind_distance_distributions(
+    dfobs_enhanced, 
+    plot=True
+)
 
